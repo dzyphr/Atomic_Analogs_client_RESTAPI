@@ -1,0 +1,15 @@
+[package]
+name = "AASwapClientRESTAPI"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+warp = "0.2"
+parking_lot = "0.10.0"
+serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "0.2", features = ["macros"] }
+subprocess = "0.2.9"
+serde_json = {version = "1.0.107", features = ["std"]}
+uuid = {version = "1.4.1", features = ["v4"]}
