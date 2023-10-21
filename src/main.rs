@@ -1,4 +1,6 @@
 use std::path::Path;
+use warp::cors;
+use std::fs;
 use uuid::{uuid, Uuid};
 use std::fs::OpenOptions;
 use serde_json::{json, Value, Map};
@@ -13,18 +15,18 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use subprocess::{PopenConfig, Popen, Redirection};
+
 fn json_body() -> impl Filter<Extract = (Request,), Error = warp::Rejection> + Clone {
     // When accepting a body, we want a JSON body
     // (and to reject huge payloads)...
-    warp::body::content_length_limit(1024 * 16).and(warp::body::json())
+    warp::body::content_length_limit(1024 * 1024 * 50/*mb*/).and(warp::body::json())
 }
 
 fn delete_json() -> impl Filter<Extract = (Id,), Error = warp::Rejection> + Clone {
     // When accepting a body, we want a JSON body
     // (and to reject huge payloads)...
-    warp::body::content_length_limit(1024 * 16).and(warp::body::json())
+    warp::body::content_length_limit(1024 * 1024 * 50/*mb*/).and(warp::body::json())
 }
-
 fn accepted_private_api_keys() -> Vec<&'static str>
 {
     return vec![
@@ -43,7 +45,10 @@ fn accepted_public_api_keys() -> Vec<&'static str>
 fn private_accepted_request_types() -> Vec<&'static str>
 {
     return vec![
-        "generateEncryptedResponse"
+        "generateEncryptedResponse",
+        "makeSwapDir",
+        "ENCresponderClaim"
+
     ]
 }
 
@@ -63,7 +68,7 @@ fn ElGamal_keypaths() -> Vec<&'static str>
 
 fn accountNameFromChainAndIndex(chain: String, index: usize) -> &'static str
 {
-    if chain == "Ergo"
+    if chain == "TestnetErgo"
     {
         let accountvec = vec![
             "responderEnv"
@@ -89,7 +94,10 @@ async fn main() {
     let main_path  = "requests";
     let public_main_path = "publicrequests";
     let OrderTypesPath = "ordertypes";
-
+    let cors = cors()
+        .allow_any_origin()
+        .allow_methods(vec!["GET", "POST"])
+        .allow_headers(vec!["Content-Type", "Authorization"]);
     let storage = Storage::new();
     let storage_filter = warp::any().map(move || storage.clone());
     let bearer_private_api_key_filter = warp::header::<String>("Authorization").and_then( | auth_header: String | async move {
@@ -119,7 +127,8 @@ async fn main() {
         .and(json_body())
         .and(storage_filter.clone())
         .and(bearer_private_api_key_filter)
-        .and_then(private_update_request_map);
+        .and_then(private_update_request_map)
+        .with(cors.clone());
     let update_request = warp::put() 
         .and(warp::path(version))
         .and(warp::path(main_path))
@@ -127,7 +136,8 @@ async fn main() {
         .and(json_body())
         .and(storage_filter.clone())
         .and(bearer_private_api_key_filter)
-        .and_then(private_update_request_map);
+        .and_then(private_update_request_map)
+        .with(cors);
     let get_requests = warp::get()
         .and(warp::path(version))
         .and(warp::path(main_path))
@@ -177,7 +187,7 @@ async fn private_update_request_map(
                     storage.request_map.write().insert(request.id, request.request_type);
                     Ok(warp::reply::with_status(
                         format!("{:?}",  output.unwrap()),
-                        http::StatusCode::CREATED,
+                        http::StatusCode::OK,
                     ))
                 }
                 else
@@ -252,6 +262,12 @@ fn handle_request(request: Request) -> (bool, Option<String>)
             let output = &(output.to_owned() + "ElGamalKeyPath variable is required!");
             return (status, Some(output.to_string()));
         }
+        if request.swapAmount == None
+        {
+            let output = &(output.to_owned() + "swapAmount` variable is required!");
+            return (status, Some(output.to_string()));
+        }
+
         let swapName = request.SwapTicketID.clone().unwrap();
         status = true;
         let responderCrossChainAccountName = accountNameFromChainAndIndex(request.responderCrossChain.clone().unwrap(), 0);
@@ -259,8 +275,9 @@ fn handle_request(request: Request) -> (bool, Option<String>)
         let mut pipe = Popen::create(&[
             "python3",  "-u", "main.py", "GeneralizeENC_ResponseSubroutine",
             &swapName, responderCrossChainAccountName,
-            responderLocalChainAccountName.clone(), &request.ElGamalKey.clone().unwrap(), &request.ElGamalKeyPath.clone().unwrap(),
-            &request.responderCrossChain.clone().unwrap(), &request.responderLocalChain.clone().unwrap()
+            responderLocalChainAccountName.clone(), &request.ElGamalKey.clone().unwrap(), 
+            &request.ElGamalKeyPath.clone().unwrap(), &request.responderCrossChain.clone().unwrap(), 
+            &request.responderLocalChain.clone().unwrap(), &request.swapAmount.clone().unwrap()
         ], PopenConfig{
             stdout: Redirection::Pipe, ..Default::default()}).expect("err");
         let (out, err) = pipe.communicate(None).expect("err");
@@ -272,9 +289,87 @@ fn handle_request(request: Request) -> (bool, Option<String>)
         {
             pipe.terminate().expect("err");
         }
+        dbg!(request.SwapTicketID.clone().unwrap() + "/ENC_response_path.bin");
+        let file_path = request.SwapTicketID.clone().unwrap() + "/ENC_response_path.bin";
+
+        let file_contents = fs::read_to_string(file_path).expect("error reading file");
+
         //TODO: test full swap sequence (up til here) through RESTAPI calls only, ideally do a
         //multifolder test (maybe even w server on remote device) to get error handling ensured
-        return (status, Some("response generated".to_string()))
+        return (status, Some(file_contents.to_string()))
+    }
+    if request.request_type == "makeSwapDir"
+    {
+        status = true;
+        if request.SwapTicketID == None
+        {
+            let output = &(output.to_owned() + "SwapTicketID variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        if request.ENCInit == None
+        {
+            let output = &(output.to_owned() + "ENCInit variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        match fs::create_dir(request.SwapTicketID.clone().expect("error swapticketid to string").to_string()) {
+            Ok(_) => println!("Directory created successfully"),
+            Err(err) => eprintln!("Error: {}", err),
+        }
+        let file_path = request.SwapTicketID.clone().unwrap() + "/ENC_init.bin";
+        let mut file = match File::create(file_path) {
+            Ok(file) => file,
+            Err(_) => todo!()
+        };
+        let data = request.ENCInit.clone().unwrap();
+        match file.write_all(data.as_bytes()) {
+            Ok(_) => println!("Data written to file successfully"),
+            Err(err) => eprintln!("Error: {}", err),
+        }
+        return (status, Some("swap directory generated".to_string()))
+    }
+    if request.request_type == "ENCresponderClaim"
+    {
+        status = true;
+        if request.SwapTicketID == None
+        {
+            let output = &(output.to_owned() + "SwapTicketID variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        if request.ENCFin == None
+        {
+            let output = &(output.to_owned() + "ENCFin variable is required!");
+            return (status, Some(output.to_string()));
+        }        
+        else
+        {
+            let file_path = request.SwapTicketID.clone().unwrap() + "/ENC_finalization.bin";
+            let mut file = match File::create(file_path) {
+                Ok(file) => file,
+                Err(_) => todo!()
+            };
+            let data = request.ENCFin.clone().unwrap();
+            match file.write_all(data.as_bytes()) {
+                Ok(_) => println!("Data written to file successfully"),
+                Err(err) => eprintln!("Error: {}", err),
+            }
+            let responderJSONPath = request.SwapTicketID.clone().unwrap() + "/responder.json";
+            let mut pipe = Popen::create(&[
+                "python3",  "-u", "main.py", "GeneralizedENC_ResponderClaimSubroutine", &responderJSONPath
+            ], PopenConfig{
+                stdout: Redirection::Pipe, ..Default::default()}).expect("err");
+            let (out, err) = pipe.communicate(None).expect("err");
+            if let Some(exit_status) = pipe.poll()
+            {
+                println!("Out: {:?}, Err: {:?}", out, err)
+            }
+            else
+            {
+                pipe.terminate().expect("err");
+            }
+            return (status, Some("Claiming Swap".to_string()))
+        }
+
+
     }
     else
     {
@@ -318,7 +413,10 @@ struct Request {
     InitiatorChain: Option<String>,
     ResponderChain: Option<String>,
     ResponderJSONPath: Option<String>,
-    SwapTicketID: Option<String>
+    SwapTicketID: Option<String>,
+    swapAmount: Option<String>,
+    ENCInit: Option<String>,
+    ENCFin:  Option<String>
 }
 
 #[derive(Clone)]
