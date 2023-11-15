@@ -15,6 +15,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use subprocess::{PopenConfig, Popen, Redirection};
+use std::process::{Command, Stdio};
+use std::thread;
 
 fn json_body() -> impl Filter<Extract = (Request,), Error = warp::Rejection> + Clone {
     // When accepting a body, we want a JSON body
@@ -47,8 +49,8 @@ fn private_accepted_request_types() -> Vec<&'static str>
     return vec![
         "generateEncryptedResponse",
         "makeSwapDir",
-        "ENCresponderClaim"
-
+        "ENCresponderClaim",
+        "loadElGamalPubs"
     ]
 }
 
@@ -93,7 +95,8 @@ async fn main() {
     let version =  "v0.0.1";
     let main_path  = "requests";
     let public_main_path = "publicrequests";
-    let OrderTypesPath = "ordertypes";
+//    let OrderTypesPath = "ordertypes";
+    let ElGamalPubsPath = "ElGamalPubs";
     let cors = cors()
         .allow_any_origin()
         .allow_methods(vec!["GET", "POST"])
@@ -137,7 +140,7 @@ async fn main() {
         .and(storage_filter.clone())
         .and(bearer_private_api_key_filter)
         .and_then(private_update_request_map)
-        .with(cors);
+        .with(cors.clone());
     let get_requests = warp::get()
         .and(warp::path(version))
         .and(warp::path(main_path))
@@ -153,10 +156,32 @@ async fn main() {
         .and(storage_filter.clone())
         .and(bearer_private_api_key_filter)
         .and_then(private_delete_request);
-    let routes = add_requests.or(get_requests).or(update_request).or(private_delete_request);
+    let get_ElGamalPubs = warp::get()
+        .and(warp::path(version))
+        .and(warp::path(ElGamalPubsPath))
+        .and(warp::path::end())
+        .and_then(get_ElGamalPubs)
+        .with(cors.clone());
+    let routes = add_requests.or(get_requests).or(update_request).or(private_delete_request).or(get_ElGamalPubs);
     warp::serve(routes)
         .run(([127, 0, 0, 1], 3031))
         .await;
+}
+
+async fn get_ElGamalPubs() -> Result<impl warp::Reply, warp::Rejection>
+{
+    let filepath = "ElGamalPubKeys.json";
+    if Path::new(filepath).exists()
+    {
+        let mut file = File::open(filepath).expect("cant open file");
+        let mut contents = String::new();
+        file.read_to_string(&mut contents).expect("cant read file");
+        Ok(warp::reply::json(&json!(contents)))
+    }
+    else
+    {
+        Ok(warp::reply::json(&json!({"none": "none"})))
+    }
 }
 
 
@@ -289,6 +314,55 @@ fn handle_request(request: Request) -> (bool, Option<String>)
         {
             pipe.terminate().expect("err");
         }
+        let child_thread = thread::spawn(move|| {
+                let mut child_process =
+                    Command::new("python3")
+                    .arg("-u")
+                    .arg("main.py")
+                    .arg("Responder_CheckLockTimeRefund")
+                    .arg(swapName)
+                    .stdout(Stdio::piped()) // Redirect stdout to /dev/null or NUL to detach from parent
+                    .stderr(Stdio::piped()) // Redirect stderr to /dev/null or NUL to detach from parent
+                    .spawn()
+                    .expect("Failed to start subprocess");
+
+                let mut output = String::new();
+                let mut error_output = String::new();
+
+                if let Some(ref mut stdout) = child_process.stdout
+                {
+                    stdout.read_to_string(&mut output).expect("Failed to read stdout");
+                }
+                else
+                {
+                    eprintln!("Failed to capture stdout.");
+                }
+
+                if let Some(ref mut stderr) = child_process.stderr
+                {
+                    stderr.read_to_string(&mut error_output).expect("Failed to read stderr");
+                }
+                else
+                {
+                    eprintln!("Failed to capture stderr.");
+                }
+/*
+                let exit_status = child_process.wait().expect("Failed to wait for subprocess");
+                if !exit_status.success() {
+                    eprintln!("Subprocess failed with exit code: {:?}", exit_status);
+                }
+                eprintln!("Subprocess failed with exit code: {:?}", exit_status);
+                eprintln!("Subprocess error output:\n{}", error_output);
+
+                */
+                let exit_status = child_process.wait().expect("Failed to wait for subprocess");
+                if exit_status.success() {
+                    println!("Subprocess output:\n{}", output);
+                } else {
+                    eprintln!("Subprocess failed with exit code: {:?}", exit_status);
+                    eprintln!("Subprocess error output:\n{}", error_output);
+                }
+            });
         dbg!(request.SwapTicketID.clone().unwrap() + "/ENC_response_path.bin");
         let file_path = request.SwapTicketID.clone().unwrap() + "/ENC_response_path.bin";
 
@@ -368,8 +442,6 @@ fn handle_request(request: Request) -> (bool, Option<String>)
             }
             return (status, Some("Claiming Swap".to_string()))
         }
-
-
     }
     else
     {
