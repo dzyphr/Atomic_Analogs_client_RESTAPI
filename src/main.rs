@@ -50,7 +50,12 @@ fn private_accepted_request_types() -> Vec<&'static str>
         "generateEncryptedResponse",
         "makeSwapDir",
         "ENCresponderClaim",
-        "loadElGamalPubs"
+        "loadElGamalPubs",
+        "readSwapFile",
+        "SigmaParticle_box_to_addr",
+        "writeSwapFile",
+        "ElGamal_decrypt_swapFile",
+        "checkBoxValue"
     ]
 }
 
@@ -362,7 +367,7 @@ fn handle_request(request: Request) -> (bool, Option<String>)
                     eprintln!("Subprocess failed with exit code: {:?}", exit_status);
                     eprintln!("Subprocess error output:\n{}", error_output);
                 }
-            });
+        });
         dbg!(request.SwapTicketID.clone().unwrap() + "/ENC_response_path.bin");
         let file_path = request.SwapTicketID.clone().unwrap() + "/ENC_response_path.bin";
 
@@ -401,6 +406,39 @@ fn handle_request(request: Request) -> (bool, Option<String>)
         }
         return (status, Some("swap directory generated".to_string()))
     }
+    if request.request_type == "writeSwapFile"
+    {
+        status = true;
+        if request.SwapTicketID == None
+        {
+            let output = &(output.to_owned() + "SwapTicketID variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        if request.SwapFileName == None
+        {
+            let output = &(output.to_owned() + "SwapFileName variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        if request.FileContents == None
+        {
+            let output = &(output.to_owned() + "FileContents variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        else
+        {
+            let file_path = request.SwapTicketID.clone().unwrap() + "/" + &request.SwapFileName.clone().unwrap();
+            let mut file = match File::create(file_path.clone()){ 
+                Ok(file) => file,
+                Err(_) => todo!()
+            };
+            let data = request.FileContents.clone().unwrap();
+            match file.write_all(data.as_bytes()) {
+                Ok(_) => println!("Data written to file successfully"),
+                Err(err) => eprintln!("Error: {}", err),
+            }
+            return (status, Some(file_path + " File Saved"))
+        }
+    }
     if request.request_type == "ENCresponderClaim"
     {
         status = true;
@@ -409,13 +447,9 @@ fn handle_request(request: Request) -> (bool, Option<String>)
             let output = &(output.to_owned() + "SwapTicketID variable is required!");
             return (status, Some(output.to_string()));
         }
-        if request.ENCFin == None
-        {
-            let output = &(output.to_owned() + "ENCFin variable is required!");
-            return (status, Some(output.to_string()));
-        }        
         else
         {
+            /*
             let file_path = request.SwapTicketID.clone().unwrap() + "/ENC_finalization.bin";
             let mut file = match File::create(file_path) {
                 Ok(file) => file,
@@ -426,6 +460,7 @@ fn handle_request(request: Request) -> (bool, Option<String>)
                 Ok(_) => println!("Data written to file successfully"),
                 Err(err) => eprintln!("Error: {}", err),
             }
+            */
             let responderJSONPath = request.SwapTicketID.clone().unwrap() + "/responder.json";
             let mut pipe = Popen::create(&[
                 "python3",  "-u", "main.py", "GeneralizedENC_ResponderClaimSubroutine", &responderJSONPath
@@ -441,6 +476,134 @@ fn handle_request(request: Request) -> (bool, Option<String>)
                 pipe.terminate().expect("err");
             }
             return (status, Some("Claiming Swap".to_string()))
+        }
+
+    }
+    if request.request_type == "readSwapFile"
+    {
+        status = true;
+        if request.SwapTicketID == None
+        {
+            let output = &(output.to_owned() + "SwapTicketID variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        if request.SwapFileName == None
+        {
+            let output = &(output.to_owned() + "SwapFileName variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        else
+        {
+            let file_path = request.SwapTicketID.clone().unwrap() + "/" +  &request.SwapFileName.clone().unwrap();
+            let file_contents = fs::read_to_string(file_path).expect("error reading file");
+            return (status, Some(file_contents.to_string()))
+        }
+    }
+    if request.request_type == "SigmaParticle_box_to_addr"
+    {
+        status = true;
+        if request.boxID == None
+        {
+            let output = &(output.to_owned() + "boxID variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        else
+        {
+            let mut pipe = Popen::create(&[
+                "python3",  "-u", "main.py", "SigmaParticle_box_to_addr", &request.boxID.clone().unwrap()
+            ], PopenConfig{
+                stdout: Redirection::Pipe, ..Default::default()}).expect("err");
+            let (out, err) = pipe.communicate(None).expect("err");
+            if let Some(exit_status) = pipe.poll()
+            {
+                println!("Out: {:?}, Err: {:?}", out, err)
+            }
+            else
+            {
+                pipe.terminate().expect("err");
+            }
+            return (status, Some(out.expect("not string").to_string()));
+        }
+    }
+    if request.request_type == "ElGamal_decrypt_swapFile"
+    {
+        status = true;
+        if request.SwapTicketID == None
+        {
+            let output = &(output.to_owned() + "SwapTicketID variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        if request.SwapFileName == None
+        {
+            let output = &(output.to_owned() + "SwapFileName variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        if request.ElGamalKey == None
+        {
+            let output = &(output.to_owned() + "ElGamalKey  variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        if request.ElGamalKeyPath == None
+        {
+            let output = &(output.to_owned() + "ElGamalKeyPath  variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        else
+        {
+            let mut pipe = Popen::create(&[
+                "python3",  "-u", "main.py", "ElGamal_decrypt", &(request.SwapTicketID.clone().unwrap() + "/" + 
+                &request.SwapFileName.clone().unwrap()), &request.ElGamalKey.clone().unwrap() , 
+                &request.ElGamalKeyPath.clone().unwrap()
+            ], PopenConfig{
+                stdout: Redirection::Pipe, ..Default::default()}).expect("err");
+            let (out, err) = pipe.communicate(None).expect("err");
+            if let Some(exit_status) = pipe.poll()
+            {
+                println!("Out: {:?}, Err: {:?}", out, err)
+            }
+            else
+            {
+                pipe.terminate().expect("err");
+            }
+            return (status, Some(out.expect("not string").to_string()));    
+        }
+        
+    }
+    if request.request_type == "checkBoxValue"
+    {
+        status = true;
+        if request.SwapTicketID == None
+        {
+            let output = &(output.to_owned() + "SwapTicketID variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        if request.fileName == None
+        {
+            let output = &(output.to_owned() + "fileName variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        if request.boxID == None
+        {
+            let output = &(output.to_owned() + "boxID variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        else
+        {
+            let mut pipe = Popen::create(&[
+                "python3",  "-u", "main.py", "checkBoxValue", &request.boxID.clone().unwrap(), 
+                &(request.SwapTicketID.clone().unwrap() + "/" + &request.fileName.clone().unwrap()), &request.SwapTicketID.clone().unwrap()
+            ], PopenConfig{
+                stdout: Redirection::Pipe, ..Default::default()}).expect("err");
+            let (out, err) = pipe.communicate(None).expect("err");
+            if let Some(exit_status) = pipe.poll()
+            {
+                println!("Out: {:?}, Err: {:?}", out, err)
+            }
+            else
+            {
+                pipe.terminate().expect("err");
+            }
+            return (status, Some(out.expect("not string").to_string()));
         }
     }
     else
@@ -488,7 +651,12 @@ struct Request {
     SwapTicketID: Option<String>,
     swapAmount: Option<String>,
     ENCInit: Option<String>,
-    ENCFin:  Option<String>
+    ENCFin:  Option<String>,
+    SwapFileName: Option<String>,
+    boxID: Option<String>,
+    FileContents: Option<String>,
+    DECSwapFileName: Option<String>,
+    fileName: Option<String>
 }
 
 #[derive(Clone)]
