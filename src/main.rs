@@ -55,7 +55,8 @@ fn private_accepted_request_types() -> Vec<&'static str>
         "SigmaParticle_box_to_addr",
         "writeSwapFile",
         "ElGamal_decrypt_swapFile",
-        "checkBoxValue"
+        "checkBoxValue",
+        "updateMainEnv"
     ]
 }
 
@@ -606,6 +607,38 @@ fn handle_request(request: Request) -> (bool, Option<String>)
             return (status, Some(out.expect("not string").to_string()));
         }
     }
+    if request.request_type == "updateMainEnv"
+    {
+        status = true;
+        if request.Key == None
+        {
+            let output = &(output.to_owned() + "Key variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        if request.Value == None
+        {
+            let output = &(output.to_owned() + "Value variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        else
+        {
+
+            let mut pipe  = Popen::create(&[
+                "python3",  "-u", "main.py", "updateMainEnv", &request.Key.clone().unwrap(), &request.Value.clone().unwrap()
+            ], PopenConfig{
+                stdout: Redirection::Pipe, ..Default::default()}).expect("err");
+            let (out, err) = pipe.communicate(None).expect("err");
+            if let Some(exit_status) = pipe.poll()
+            {
+                println!("Out: {:?}, Err: {:?}", out, err)
+            }
+            else
+            {
+                pipe.terminate().expect("err");
+            }
+            return (status, Some(out.expect("not string").to_string()));
+        }
+    }
     else
     {
         return  (status, Some("Unknown Error".to_string()));
@@ -656,7 +689,9 @@ struct Request {
     boxID: Option<String>,
     FileContents: Option<String>,
     DECSwapFileName: Option<String>,
-    fileName: Option<String>
+    fileName: Option<String>,
+    Key: Option<String>,
+    Value: Option<String>
 }
 
 #[derive(Clone)]
