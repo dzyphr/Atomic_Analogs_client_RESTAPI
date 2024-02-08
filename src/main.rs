@@ -56,7 +56,8 @@ fn private_accepted_request_types() -> Vec<&'static str>
         "writeSwapFile",
         "ElGamal_decrypt_swapFile",
         "checkBoxValue",
-        "updateMainEnv"
+        "updateMainEnv",
+        "initErgoAccountNonInteractive"
     ]
 }
 
@@ -639,6 +640,71 @@ fn handle_request(request: Request) -> (bool, Option<String>)
             return (status, Some(out.expect("not string").to_string()));
         }
     }
+    if request.request_type == "initErgoAccountNonInteractive"
+    {
+        status = true;
+        if request.ErgoTestnetNodeURL == None
+        {
+            let output = &(output.to_owned() + "ErgoTestnetNodeURL variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        if request.ErgoMnemonic == None
+        {
+            let output = &(output.to_owned() + "ErgoMnemonic variable is required!");
+            return (status, Some(output.to_string()));
+
+        }
+        if request.ErgoMnemonicPass == None
+        {
+            let output = &(output.to_owned() + "ErgoMnemonicPass variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        if request.ErgoSenderEIP3Secret == None
+        {
+            let output = &(output.to_owned() + "ErgoSenderEIP3Secret variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        if request.ErgoSenderPubKey == None
+        {
+            let output = &(output.to_owned() + "ErgoSenderPubKey variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        if request.ErgoAPIURL == None
+        {
+            let output = &(output.to_owned() + "ErgoAPIURL variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        if request.FullDirPath == None
+        {
+            let output = &(output.to_owned() + "FullDirPath variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        if request.FullEnvPath == None
+        {
+            let output = &(output.to_owned() + "FullEnvPath variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        else
+        {
+            let mut pipe  = Popen::create(&[
+                "python3",  "-u", "main.py", "initErgoAccountNonInteractive", &request.ErgoTestnetNodeURL.clone().unwrap(), 
+                &request.ErgoMnemonic.clone().unwrap(), &request.ErgoMnemonicPass.clone().unwrap(), 
+                &request.ErgoSenderEIP3Secret.clone().unwrap(), &request.ErgoSenderPubKey.clone().unwrap(), 
+                &request.ErgoAPIURL.clone().unwrap(), &request.FullDirPath.clone().unwrap(), &request.FullEnvPath.clone().unwrap()
+            ], PopenConfig{
+                stdout: Redirection::Pipe, ..Default::default()}).expect("err");
+            let (out, err) = pipe.communicate(None).expect("err");
+            if let Some(exit_status) = pipe.poll()
+            {
+                println!("Out: {:?}, Err: {:?}", out, err)
+            }
+            else
+            {
+                pipe.terminate().expect("err");
+            }
+            return (status, Some(out.expect("not string").to_string()));
+        }
+    }
     else
     {
         return  (status, Some("Unknown Error".to_string()));
@@ -691,7 +757,16 @@ struct Request {
     DECSwapFileName: Option<String>,
     fileName: Option<String>,
     Key: Option<String>,
-    Value: Option<String>
+    Value: Option<String>,
+    ErgoTestnetNodeURL: Option<String>,
+    ErgoMnemonic: Option<String>,
+    ErgoMnemonicPass: Option<String>,
+    ErgoSenderEIP3Secret: Option<String>,
+    ErgoSenderPubKey: Option<String>,
+    ErgoAPIURL: Option<String>,
+    FullDirPath: Option<String>, 
+    FullEnvPath: Option<String>
+
 }
 
 #[derive(Clone)]
