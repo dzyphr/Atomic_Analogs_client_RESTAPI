@@ -57,7 +57,8 @@ fn private_accepted_request_types() -> Vec<&'static str>
         "ElGamal_decrypt_swapFile",
         "checkBoxValue",
         "updateMainEnv",
-        "initErgoAccountNonInteractive"
+        "initErgoAccountNonInteractive",
+        "initSepoliaAccountNonInteractive"
     ]
 }
 
@@ -705,6 +706,71 @@ fn handle_request(request: Request) -> (bool, Option<String>)
             return (status, Some(out.expect("not string").to_string()));
         }
     }
+    if request.request_type == "initSepoliaAccountNonInteractive"
+    {
+        status = true;
+        if request.SepoliaSenderAddr == None
+        {
+            let output = &(output.to_owned() + "SepoliaSenderAddr variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        if request.SepoliaPrivKey == None
+        {
+            let output = &(output.to_owned() + "SepoliaPrivKey variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        if request.Sepolia == None
+        {
+            let output = &(output.to_owned() + "Sepolia variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        if request.SepoliaID == None
+        {
+            let output = &(output.to_owned() + "SepoliaID variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        if request.SepoliaScan == None
+        {
+            let output = &(output.to_owned() + "SepoliaScan variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        if request.SolidityCompilerVersion == None
+        {
+            let output = &(output.to_owned() + "SolidityCompilerVersion variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        if request.FullDirPath == None
+        {
+            let output = &(output.to_owned() + "FullDirPath variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        if request.FullEnvPath == None
+        {
+            let output = &(output.to_owned() + "FullEnvPath variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        else
+        {
+            let mut pipe  = Popen::create(&[
+                "python3",  "-u", "main.py", "initSepoliaAccountNonInteractive", &request.SepoliaSenderAddr.clone().unwrap(), 
+                &request.SepoliaPrivKey.clone().unwrap(), &request.Sepolia.clone().unwrap(),
+                &request.SepoliaID.clone().unwrap(), &request.SepoliaScan.clone().unwrap(), 
+                &request.SolidityCompilerVersion.clone().unwrap(), &request.FullDirPath.clone().unwrap(),
+                &request.FullEnvPath.clone().unwrap()
+            ], PopenConfig{
+                stdout: Redirection::Pipe, ..Default::default()}).expect("err");
+            let (out, err) = pipe.communicate(None).expect("err");
+            if let Some(exit_status) = pipe.poll()
+            {
+                println!("Out: {:?}, Err: {:?}", out, err)
+            }
+            else
+            {
+                pipe.terminate().expect("err");
+            }
+            return (status, Some(out.expect("not string").to_string()));
+        }
+    }
     else
     {
         return  (status, Some("Unknown Error".to_string()));
@@ -765,8 +831,13 @@ struct Request {
     ErgoSenderPubKey: Option<String>,
     ErgoAPIURL: Option<String>,
     FullDirPath: Option<String>, 
-    FullEnvPath: Option<String>
-
+    FullEnvPath: Option<String>,
+    SepoliaSenderAddr: Option<String>,
+    SepoliaPrivKey: Option<String>,
+    Sepolia: Option<String>,
+    SepoliaID: Option<String>,
+    SepoliaScan: Option<String>,
+    SolidityCompilerVersion: Option<String>
 }
 
 #[derive(Clone)]
