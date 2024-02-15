@@ -105,6 +105,7 @@ async fn main() {
     let public_main_path = "publicrequests";
 //    let OrderTypesPath = "ordertypes";
     let ElGamalPubsPath = "ElGamalPubs";
+    let ElGamalQChannelsPath = "ElGamalQChannels";
     let cors = cors()
         .allow_any_origin()
         .allow_methods(vec!["GET", "POST"])
@@ -170,7 +171,15 @@ async fn main() {
         .and(warp::path::end())
         .and_then(get_ElGamalPubs)
         .with(cors.clone());
-    let routes = add_requests.or(get_requests).or(update_request).or(private_delete_request).or(get_ElGamalPubs);
+    let get_ElGamalQChannels = warp::get()
+        .and(warp::path(version))
+        .and(warp::path(ElGamalQChannelsPath))
+        .and(warp::path::end())
+        .and_then(get_ElGamalQChannels)
+        .with(cors.clone());
+    let routes = 
+        add_requests.or(get_requests).or(update_request).or(private_delete_request)
+        .or(get_ElGamalPubs).or(get_ElGamalQChannels);
     warp::serve(routes)
         .run(([127, 0, 0, 1], 3031))
         .await;
@@ -179,6 +188,17 @@ async fn main() {
 async fn get_ElGamalPubs() -> Result<impl warp::Reply, warp::Rejection>
 {
     let filepath = "ElGamalPubKeys.json";
+    readJSONfromfilepath(filepath).await
+}
+
+async fn get_ElGamalQChannels() -> Result<impl warp::Reply, warp::Rejection>
+{
+    let filepath = "ElGamalQChannels.json";
+    readJSONfromfilepath(filepath).await
+}
+
+async fn readJSONfromfilepath(filepath: &str) -> Result<impl warp::Reply, warp::Rejection>
+{
     if Path::new(filepath).exists()
     {
         let mut file = File::open(filepath).expect("cant open file");
@@ -191,7 +211,6 @@ async fn get_ElGamalPubs() -> Result<impl warp::Reply, warp::Rejection>
         Ok(warp::reply::json(&json!({"none": "none"})))
     }
 }
-
 
 async fn private_delete_request(
     id: Id,
