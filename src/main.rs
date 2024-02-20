@@ -1,3 +1,5 @@
+#![allow(non_snake_case)]
+#![allow(unused_parens)]
 use std::path::Path;
 use warp::cors;
 use std::fs;
@@ -17,7 +19,9 @@ use serde::{Deserialize, Serialize};
 use subprocess::{PopenConfig, Popen, Redirection};
 use std::process::{Command, Stdio};
 use std::thread;
-
+use num_bigint::BigInt;
+mod math;
+use math::{big_is_prime};
 fn json_body() -> impl Filter<Extract = (Request,), Error = warp::Rejection> + Clone {
     // When accepting a body, we want a JSON body
     // (and to reject huge payloads)...
@@ -58,7 +62,8 @@ fn private_accepted_request_types() -> Vec<&'static str>
         "checkBoxValue",
         "updateMainEnv",
         "initErgoAccountNonInteractive",
-        "initSepoliaAccountNonInteractive"
+        "initSepoliaAccountNonInteractive",
+        "checkElGQChannelCorrectness"
     ]
 }
 
@@ -804,12 +809,28 @@ fn handle_request(request: Request) -> (bool, Option<String>)
             return (status, Some(out.expect("not string").to_string()));
         }
     }
+    if request.request_type == "checkElGQChannelCorrectness"
+    {
+        status = true;
+        if request.QChannel == None
+        {
+            let output = &(output.to_owned() + "QChannel variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        else
+        {
+            let prime = big_is_prime(
+                &request.QChannel.unwrap().parse::<BigInt>().expect("error unwrapping specified q value into u64")
+            );
+            return (status, Some(prime.to_string()));
+            //adding big_is_prime directly to avoid redirection waste
+        }
+    }
     else
     {
         return  (status, Some("Unknown Error".to_string()));
     }
 }
-
 type RequestMap = HashMap<String, String>;
 
 #[derive(Debug)]
@@ -870,7 +891,8 @@ struct Request {
     Sepolia: Option<String>,
     SepoliaID: Option<String>,
     SepoliaScan: Option<String>,
-    SolidityCompilerVersion: Option<String>
+    SolidityCompilerVersion: Option<String>,
+    QChannel: Option<String>
 }
 
 #[derive(Clone)]
