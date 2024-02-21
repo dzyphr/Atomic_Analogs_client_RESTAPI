@@ -63,7 +63,8 @@ fn private_accepted_request_types() -> Vec<&'static str>
         "updateMainEnv",
         "initErgoAccountNonInteractive",
         "initSepoliaAccountNonInteractive",
-        "checkElGQChannelCorrectness"
+        "checkElGQChannelCorrectness",
+        "generateElGKeySpecificQ"
     ]
 }
 
@@ -824,6 +825,32 @@ fn handle_request(request: Request) -> (bool, Option<String>)
             );
             return (status, Some(prime.to_string()));
             //adding big_is_prime directly to avoid redirection waste
+        }
+    }
+    if request.request_type == "generateElGKeySpecificQ"
+    {
+        status = true;
+        if request.QChannel == None
+        {
+            let output = &(output.to_owned() + "QChannel variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        else
+        {
+            let mut pipe  = Popen::create(&[
+                "python3",  "-u", "main.py", "generateNewElGamalPubKey", &request.QChannel.clone().unwrap()
+            ], PopenConfig{
+                stdout: Redirection::Pipe, ..Default::default()}).expect("err");
+            let (out, err) = pipe.communicate(None).expect("err");
+            if let Some(exit_status) = pipe.poll()
+            {
+                println!("Out: {:?}, Err: {:?}", out, err)
+            }
+            else
+            {
+                pipe.terminate().expect("err");
+            }
+            return (status, Some(out.expect("not string").to_string()));
         }
     }
     else
