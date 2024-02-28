@@ -63,8 +63,8 @@ fn private_accepted_request_types() -> Vec<&'static str>
         "updateMainEnv",
         "initErgoAccountNonInteractive",
         "initSepoliaAccountNonInteractive",
-        "checkElGQChannelCorrectness",
-        "generateElGKeySpecificQ"
+        "checkElGQGChannelCorrectness",
+        "generateElGKeySpecificQG"
     ]
 }
 
@@ -111,8 +111,8 @@ async fn main() {
     let public_main_path = "publicrequests"; //might never need this until client features include server hosting type abilities
 //    let OrderTypesPath = "ordertypes";
     let ElGamalPubsPath = "ElGamalPubs";
-    let ElGamalQChannelsPath = "ElGamalQChannels";
-    let QPubkeyArrayPath = "QPubkeyArray";
+    let ElGamalQChannelsPath = "ElGamalQGChannels";
+    let QPubkeyArrayPath = "QGPubkeyArray";
     let cors = cors()
         .allow_any_origin()
         .allow_methods(vec!["GET", "POST"])
@@ -810,35 +810,45 @@ fn handle_request(request: Request) -> (bool, Option<String>)
             return (status, Some(out.expect("not string").to_string()));
         }
     }
-    if request.request_type == "checkElGQChannelCorrectness"
+    if request.request_type == "checkElGQGChannelCorrectness"
     {
         status = true;
-        if request.QChannel == None
+        if request.QGChannel == None
         {
-            let output = &(output.to_owned() + "QChannel variable is required!");
+            let output = &(output.to_owned() + "QGChannel variable is required!");
             return (status, Some(output.to_string()));
         }
         else
         {
-            let prime = big_is_prime(
-                &request.QChannel.unwrap().parse::<BigInt>().expect("error unwrapping specified q value into u64")
+            let QG = request.QGChannel.clone().unwrap();
+            let QGvec: Vec<_> = QG.split(",").collect();
+            let Q = &QGvec.clone()[0];
+            let G = &QGvec.clone()[1];
+            //TODO CHECK G AS WELL
+            let Qprime = big_is_prime(
+                &Q.parse::<BigInt>().expect("error unwrapping specified q value into u64")
             );
-            return (status, Some(prime.to_string()));
+
+            return (status, Some(Qprime.to_string()));
             //adding big_is_prime directly to avoid redirection waste
         }
     }
-    if request.request_type == "generateElGKeySpecificQ"
+    if request.request_type == "generateElGKeySpecificQG"
     {
         status = true;
-        if request.QChannel == None
+        if request.QGChannel == None
         {
-            let output = &(output.to_owned() + "QChannel variable is required!");
+            let output = &(output.to_owned() + "QGChannel variable is required!");
             return (status, Some(output.to_string()));
         }
         else
         {
+            let QG = request.QGChannel.clone().unwrap();
+            let QGvec: Vec<_> = QG.split(",").collect();
+            let Q = &QGvec[0]; 
+            let G = &QGvec[1];
             let mut pipe  = Popen::create(&[
-                "python3",  "-u", "main.py", "generateNewElGamalPubKey", &request.QChannel.clone().unwrap()
+                "python3",  "-u", "main.py", "generateNewElGamalPubKey", &Q, &G
             ], PopenConfig{
                 stdout: Redirection::Pipe, ..Default::default()}).expect("err");
             let (out, err) = pipe.communicate(None).expect("err");
@@ -919,7 +929,7 @@ struct Request {
     SepoliaID: Option<String>,
     SepoliaScan: Option<String>,
     SolidityCompilerVersion: Option<String>,
-    QChannel: Option<String>
+    QGChannel: Option<String>
 }
 
 #[derive(Clone)]
