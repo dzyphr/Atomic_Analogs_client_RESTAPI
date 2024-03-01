@@ -1,5 +1,6 @@
 #![allow(non_snake_case)]
 #![allow(unused_parens)]
+extern crate serde_json;
 use std::path::Path;
 use warp::cors;
 use std::fs;
@@ -22,6 +23,8 @@ use std::thread;
 use num_bigint::BigInt;
 mod math;
 use math::{big_is_prime};
+use std::collections::BTreeMap;
+use serde_json::from_str;
 fn json_body() -> impl Filter<Extract = (Request,), Error = warp::Rejection> + Clone {
     // When accepting a body, we want a JSON body
     // (and to reject huge payloads)...
@@ -33,11 +36,30 @@ fn delete_json() -> impl Filter<Extract = (Id,), Error = warp::Rejection> + Clon
     // (and to reject huge payloads)...
     warp::body::content_length_limit(1024 * 1024 * 50/*mb*/).and(warp::body::json())
 }
-fn accepted_private_api_keys() -> Vec<&'static str>
+
+
+fn accepted_private_api_keys() -> Vec<String>
 {
-    return vec![
-        "PASSWORD"
-    ]
+    let accepted_private_api_keys_filepath = "accepted_private_api_keys.json";
+    let mut file = match File::open(&accepted_private_api_keys_filepath) {
+        Ok(file) => file,
+        Err(_) => todo!()
+    };
+    let mut contents = String::new();
+    if let Err(e) = file.read_to_string(&mut contents) {
+        eprintln!("Error reading file: {}", e);
+    }
+    let json_value: Value = match serde_json::from_str(&contents) {
+        Ok(value) => value,
+        Err(_) => todo!()
+    };
+    let values: Vec<String> = json_value
+        .as_object()
+        .expect("JSON should be an object")
+        .values()
+        .filter_map(|v| v.as_str().map(String::from))
+        .collect();
+    return values
 }
 
 fn accepted_public_api_keys() -> Vec<&'static str>
@@ -123,7 +145,7 @@ async fn main() {
             if auth_header.starts_with("Bearer ")
             {
                 let api_key = auth_header.trim_start_matches("Bearer ").to_string();
-                if accepted_private_api_keys().contains(&api_key.as_str())
+                if accepted_private_api_keys().contains(&api_key)
                 {
                     let response = warp::reply::html("API Key Valid");
                     Ok(response)
