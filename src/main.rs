@@ -25,84 +25,23 @@ mod math;
 use math::{big_is_prime};
 use std::collections::BTreeMap;
 use serde_json::from_str;
-fn json_body() -> impl Filter<Extract = (Request,), Error = warp::Rejection> + Clone {
-    // When accepting a body, we want a JSON body
-    // (and to reject huge payloads)...
-    warp::body::content_length_limit(1024 * 1024 * 50/*mb*/).and(warp::body::json())
-}
+mod json_fns;
+use json_fns::{json_body, delete_json};
+mod API_keys;
+use API_keys::{accepted_private_api_keys, accepted_public_api_keys};
+mod accepted_request_types;
+use accepted_request_types::{private_accepted_request_types, public_accepted_request_types};
+mod get_fns;
+use get_fns::{private_get_request_map, get_QPubkeyArray, get_ElGamalQChannels, get_ElGamalPubs}; 
+mod json_tools;
+use json_tools::{readJSONfromfilepath};
+mod delete_fns;
+use delete_fns::{private_delete_request};
+mod update_fns;
+use update_fns::{private_update_request_map};
+mod str_tools;
+use str_tools::{rem_first_and_last};
 
-fn delete_json() -> impl Filter<Extract = (Id,), Error = warp::Rejection> + Clone {
-    // When accepting a body, we want a JSON body
-    // (and to reject huge payloads)...
-    warp::body::content_length_limit(1024 * 1024 * 50/*mb*/).and(warp::body::json())
-}
-
-
-fn accepted_private_api_keys() -> Vec<String>
-{
-    let accepted_private_api_keys_filepath = "accepted_private_api_keys.json";
-    let mut file = match File::open(&accepted_private_api_keys_filepath) {
-        Ok(file) => file,
-        Err(_) => todo!()
-    };
-    let mut contents = String::new();
-    if let Err(e) = file.read_to_string(&mut contents) {
-        eprintln!("Error reading file: {}", e);
-    }
-    let json_value: Value = match serde_json::from_str(&contents) {
-        Ok(value) => value,
-        Err(_) => todo!()
-    };
-    let values: Vec<String> = json_value
-        .as_object()
-        .expect("JSON should be an object")
-        .values()
-        .filter_map(|v| v.as_str().map(String::from))
-        .collect();
-    return values
-}
-
-fn accepted_public_api_keys() -> Vec<&'static str>
-{
-    return vec![
-        "123"
-    ]
-}
-
-
-fn private_accepted_request_types() -> Vec<&'static str>
-{
-    return vec![
-        "generateEncryptedResponse",
-        "makeSwapDir",
-        "ENCresponderClaim",
-        "loadElGamalPubs",
-        "readSwapFile",
-        "SigmaParticle_box_to_addr",
-        "writeSwapFile",
-        "ElGamal_decrypt_swapFile",
-        "checkBoxValue",
-        "updateMainEnv",
-        "initErgoAccountNonInteractive",
-        "initSepoliaAccountNonInteractive",
-        "checkElGQGChannelCorrectness",
-        "generateElGKeySpecificQG"
-    ]
-}
-
-fn public_accepted_request_types() -> Vec<&'static str>
-{
-    return vec![
-    ]
-}
-
-
-fn ElGamal_keypaths() -> Vec<&'static str>
-{
-    return vec![
-        "Key0.ElGamalKey"
-    ]
-}
 
 fn accountNameFromChainAndIndex(chain: String, index: usize) -> &'static str
 {
@@ -211,118 +150,15 @@ async fn main() {
         .and(warp::path(public_main_path))
         .and(warp::path(QPubkeyArrayPath))
         .and(warp::path::end())
-        .and_then(get_QPubkeyArray);
+        .and_then(get_QPubkeyArray)
+        .with(cors.clone());;
+        
     let routes = 
         add_requests.or(get_requests).or(update_request).or(private_delete_request)
         .or(get_ElGamalPubs).or(get_ElGamalQChannels).or(get_QPubkeyArray);
     warp::serve(routes)
         .run(([127, 0, 0, 1], 3031))
         .await;
-}
-
-async fn get_ElGamalPubs() -> Result<impl warp::Reply, warp::Rejection>
-{
-    let filepath = "ElGamalPubKeys.json";
-    readJSONfromfilepath(filepath).await
-}
-
-async fn get_ElGamalQChannels() -> Result<impl warp::Reply, warp::Rejection>
-{
-    let filepath = "ElGamalQChannels.json";
-    readJSONfromfilepath(filepath).await
-}
-
-async fn get_QPubkeyArray() -> Result<impl warp::Reply, warp::Rejection>
-{
-    let filepath = "QPubkeyArray.json";
-    readJSONfromfilepath(filepath).await
-}
-
-
-async fn readJSONfromfilepath(filepath: &str) -> Result<impl warp::Reply, warp::Rejection>
-{
-    if Path::new(filepath).exists()
-    {
-        let mut file = File::open(filepath).expect("cant open file");
-        let mut contents = String::new();
-        file.read_to_string(&mut contents).expect("cant read file");
-        Ok(warp::reply::json(&json!(contents)))
-    }
-    else
-    {
-        Ok(warp::reply::json(&json!({"none": "none"})))
-    }
-}
-
-async fn private_delete_request(
-    id: Id,
-    storage: Storage,
-    apikey: Html<&str>
-    ) -> Result<impl warp::Reply, warp::Rejection> {
-        storage.request_map.write().remove(&id.id);
-        Ok(warp::reply::with_status(
-            "Removed request from request list",
-            http::StatusCode::OK,
-        ))
-}
-
-async fn private_update_request_map(
-    request: Request,
-    storage: Storage,
-    apikey: Html<&str>
-    ) -> Result<impl warp::Reply, warp::Rejection> {
-        if storage.request_map.read().contains_key(&request.id) == false //prevent overwriting request ids
-        {
-            if private_accepted_request_types().contains(&request.request_type.as_str())
-            {
-                let (handled, output) = handle_request(request.clone());
-                if handled == true
-                {
-                    storage.request_map.write().insert(request.id, request.request_type);
-                    Ok(warp::reply::with_status(
-                        format!("{:?}",  output.unwrap()),
-                        http::StatusCode::OK,
-                    ))
-                }
-                else
-                {
-                    match output{
-                        Some(ref errorstring) =>
-                            Ok(warp::reply::with_status(
-                                format!("Request Denied\n {:?}", output.unwrap()),
-                                http::StatusCode::METHOD_NOT_ALLOWED
-                            )),
-                        None =>
-                            Ok(warp::reply::with_status(
-                                format!("Request Denied\n"),
-                                http::StatusCode::METHOD_NOT_ALLOWED
-                            ))
-                    }
-                }
-            }
-            else
-            {
-                Err(warp::reject::custom(Badrequesttype))
-            }
-        }
-        else
-        {
-            Err(warp::reject::custom(Duplicateid))
-        }
-}
-async fn private_get_request_map(
-    storage: Storage,
-    apikey: Html<&str>
-    ) -> Result<impl warp::Reply, warp::Rejection> {
-        let result = storage.request_map.read();
-        Ok(warp::reply::json(&*result))
-}
-
-fn rem_first_and_last(value: &str) -> &str {
-    let mut chars = value.chars();
-    chars.next();
-    chars.next_back();
-    chars.as_str()
 }
 
 fn handle_request(request: Request) -> (bool, Option<String>)
@@ -893,29 +729,29 @@ fn handle_request(request: Request) -> (bool, Option<String>)
 type RequestMap = HashMap<String, String>;
 
 #[derive(Debug)]
-struct Badapikey;
+pub struct Badapikey;
 impl warp::reject::Reject for Badapikey {}
 
 #[derive(Debug)]
-struct Noapikey;
+pub struct Noapikey;
 impl warp::reject::Reject for Noapikey {}
 
 #[derive(Debug)]
-struct Duplicateid;
+pub struct Duplicateid;
 impl warp::reject::Reject for Duplicateid {}
 
 #[derive(Debug)]
-struct Badrequesttype;
+pub struct Badrequesttype;
 impl warp::reject::Reject for Badrequesttype {}
 
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
-struct Id {
+pub struct Id {
     id: String,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
-struct Request {
+pub struct Request {
     id: String,
     request_type: String,
     swapName: Option<String>,
@@ -955,7 +791,7 @@ struct Request {
 }
 
 #[derive(Clone)]
-struct Storage {
+pub struct Storage {
    request_map: Arc<RwLock<RequestMap>>
 }
 
