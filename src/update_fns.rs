@@ -10,7 +10,7 @@ pub async fn private_update_request_map(
         {
             if private_accepted_request_types().contains(&request.request_type.as_str())
             {
-                let (handled, output) = handle_request(request.clone());
+                let (handled, output) = handle_request(request.clone(), storage.clone());
                 if handled == true
                 {
                     storage.request_map.write().insert(request.id, request.request_type);

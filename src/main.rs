@@ -65,6 +65,12 @@ fn accountNameFromChainAndIndex(chain: String, index: usize) -> &'static str
     }
 }
 
+fn checkAccountLoggedInStatus(encEnvPath: &str, storage: Storage) -> bool
+{
+    let s = storage.loggedInAccountMap.read().clone();
+    return s.contains_key(encEnvPath)
+}
+
 #[tokio::main]
 async fn main() {
     let version =  "v0.0.1";
@@ -161,7 +167,7 @@ async fn main() {
         .await;
 }
 
-fn handle_request(request: Request) -> (bool, Option<String>)
+fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
 {
     let mut output = "";
     let mut status = false;
@@ -202,72 +208,200 @@ fn handle_request(request: Request) -> (bool, Option<String>)
         status = true;
         let responderCrossChainAccountName = accountNameFromChainAndIndex(request.responderCrossChain.clone().unwrap(), 0);
         let responderLocalChainAccountName = accountNameFromChainAndIndex(request.responderLocalChain.clone().unwrap(), 0);
-        let mut pipe = Popen::create(&[
-            "python3",  "-u", "main.py", "GeneralizeENC_ResponseSubroutine",
-            &swapName, responderCrossChainAccountName,
-            responderLocalChainAccountName.clone(), &request.ElGamalKey.clone().unwrap(), 
-            &request.ElGamalKeyPath.clone().unwrap(), &request.responderCrossChain.clone().unwrap(), 
-            &request.responderLocalChain.clone().unwrap(), &request.swapAmount.clone().unwrap()
-        ], PopenConfig{
-            stdout: Redirection::Pipe, ..Default::default()}).expect("err");
-        let (out, err) = pipe.communicate(None).expect("err");
-        if let Some(exit_status) = pipe.poll()
+        let mut localChainAccountPassword = String::new();
+        let mut crossChainAccountPassword = String::new();
+        let mut InitiatorChain = request.responderCrossChain.clone().unwrap();
+        let mut ResponderChain = request.responderLocalChain.clone().unwrap();
+        dbg!(&InitiatorChain);
+        dbg!(&ResponderChain);
+        if InitiatorChain == "TestnetErgo"
         {
-            println!("Out: {:?}, Err: {:?}", out, err)
+            let chainFrameworkPath = "Ergo/SigmaParticle/";
+            let encEnvPath = chainFrameworkPath.to_owned() + responderCrossChainAccountName + "/.env.encrypted";
+            dbg!(&encEnvPath);
+            let exists = if let Ok(_) = fs::metadata(encEnvPath.clone()) {
+                true
+            } else {
+                false
+            };
+            if exists
+            {
+                if checkAccountLoggedInStatus(&encEnvPath, storage.clone()) == true
+                {
+                    crossChainAccountPassword = storage.loggedInAccountMap.read()[&encEnvPath].clone();
+                }
+                else
+                {
+                    let errstr = InitiatorChain.to_owned() + " " +  &responderCrossChainAccountName + " is not logged in!";
+                    dbg!(&errstr);
+                    return (false, Some(errstr.to_string()))
+                }
+            }
+        }
+        if ResponderChain == "Sepolia"
+        {
+            let chainFrameworkPath = "EVM/Atomicity/";
+            let encEnvPath = chainFrameworkPath.to_owned() + responderLocalChainAccountName + "/.env.encrypted";
+            dbg!(&encEnvPath);
+            let exists = if let Ok(_) = fs::metadata(encEnvPath.clone()) {
+                true
+            } else {
+                false
+            };
+            if exists
+            {
+                if checkAccountLoggedInStatus(&encEnvPath, storage.clone()) == true
+                {
+                    localChainAccountPassword = storage.loggedInAccountMap.read()[&encEnvPath].clone();
+                }
+                else
+                {
+                    let errstr = ResponderChain.to_owned() + " " + &responderLocalChainAccountName + " is not logged in!";
+                    dbg!(&errstr);
+                    return (false, Some(errstr.to_string()))
+                }
+            }
+        }
+        if localChainAccountPassword == String::new() && crossChainAccountPassword == String::new()
+        {
+            let mut pipe = Popen::create(&[
+                "python3",  "-u", "main.py", "GeneralizeENC_ResponseSubroutine",
+                &swapName, responderCrossChainAccountName,
+                responderLocalChainAccountName.clone(), &request.ElGamalKey.clone().unwrap(), 
+                &request.ElGamalKeyPath.clone().unwrap(), &request.responderCrossChain.clone().unwrap(), 
+                &request.responderLocalChain.clone().unwrap(), &request.swapAmount.clone().unwrap()
+            ], PopenConfig{
+                stdout: Redirection::Pipe, ..Default::default()}).expect("err");
+            let (out, err) = pipe.communicate(None).expect("err");
+            if let Some(exit_status) = pipe.poll()
+            {
+                println!("Out: {:?}, Err: {:?}", out, err)
+            }
+            else
+            {
+                pipe.terminate().expect("err");
+            }
+            let child_thread = thread::spawn(move|| {
+                    let mut child_process =
+                        Command::new("python3")
+                        .arg("-u")
+                        .arg("main.py")
+                        .arg("Responder_CheckLockTimeRefund")
+                        .arg(swapName)
+                        .stdout(Stdio::piped()) // Redirect stdout to /dev/null or NUL to detach from parent
+                        .stderr(Stdio::piped()) // Redirect stderr to /dev/null or NUL to detach from parent
+                        .spawn()
+                        .expect("Failed to start subprocess");
+
+                    let mut output = String::new();
+                    let mut error_output = String::new();
+
+                    if let Some(ref mut stdout) = child_process.stdout
+                    {
+                        stdout.read_to_string(&mut output).expect("Failed to read stdout");
+                    }
+                    else
+                    {
+                        eprintln!("Failed to capture stdout.");
+                    }
+
+                    if let Some(ref mut stderr) = child_process.stderr
+                    {
+                        stderr.read_to_string(&mut error_output).expect("Failed to read stderr");
+                    }
+                    else
+                    {
+                        eprintln!("Failed to capture stderr.");
+                    }
+    /*
+                    let exit_status = child_process.wait().expect("Failed to wait for subprocess");
+                    if !exit_status.success() {
+                        eprintln!("Subprocess failed with exit code: {:?}", exit_status);
+                    }
+                    eprintln!("Subprocess failed with exit code: {:?}", exit_status);
+                    eprintln!("Subprocess error output:\n{}", error_output);
+
+                    */
+                    let exit_status = child_process.wait().expect("Failed to wait for subprocess");
+                    if exit_status.success() {
+                        println!("Subprocess output:\n{}", output);
+                    } else {
+                        eprintln!("Subprocess failed with exit code: {:?}", exit_status);
+                        eprintln!("Subprocess error output:\n{}", error_output);
+                    }
+            });
         }
         else
         {
-            pipe.terminate().expect("err");
-        }
-        let child_thread = thread::spawn(move|| {
-                let mut child_process =
-                    Command::new("python3")
-                    .arg("-u")
-                    .arg("main.py")
-                    .arg("Responder_CheckLockTimeRefund")
-                    .arg(swapName)
-                    .stdout(Stdio::piped()) // Redirect stdout to /dev/null or NUL to detach from parent
-                    .stderr(Stdio::piped()) // Redirect stderr to /dev/null or NUL to detach from parent
-                    .spawn()
-                    .expect("Failed to start subprocess");
+            //TODO ENC account endpoint usage with args
+            let mut pipe = Popen::create(&[
+                "python3",  "-u", "main.py", "GeneralizeENC_ResponseSubroutine",
+                &swapName, responderCrossChainAccountName,
+                responderLocalChainAccountName.clone(), &request.ElGamalKey.clone().unwrap(),
+                &request.ElGamalKeyPath.clone().unwrap(), &request.responderCrossChain.clone().unwrap(),
+                &request.responderLocalChain.clone().unwrap(), &request.swapAmount.clone().unwrap(),
+                &localChainAccountPassword, &crossChainAccountPassword
+            ], PopenConfig{
+                stdout: Redirection::Pipe, ..Default::default()}).expect("err");
+            let (out, err) = pipe.communicate(None).expect("err");
+            if let Some(exit_status) = pipe.poll()
+            {
+                println!("Out: {:?}, Err: {:?}", out, err)
+            }
+            else
+            {
+                pipe.terminate().expect("err");
+            }
+            let child_thread = thread::spawn(move|| {
+                    let mut child_process =
+                        Command::new("python3")
+                        .arg("-u")
+                        .arg("main.py")
+                        .arg("Responder_CheckLockTimeRefund")
+                        .arg(swapName)
+                        .stdout(Stdio::piped()) // Redirect stdout to /dev/null or NUL to detach from parent
+                        .stderr(Stdio::piped()) // Redirect stderr to /dev/null or NUL to detach from parent
+                        .spawn()
+                        .expect("Failed to start subprocess");
 
-                let mut output = String::new();
-                let mut error_output = String::new();
+                    let mut output = String::new();
+                    let mut error_output = String::new();
 
-                if let Some(ref mut stdout) = child_process.stdout
-                {
-                    stdout.read_to_string(&mut output).expect("Failed to read stdout");
-                }
-                else
-                {
-                    eprintln!("Failed to capture stdout.");
-                }
+                    if let Some(ref mut stdout) = child_process.stdout
+                    {
+                        stdout.read_to_string(&mut output).expect("Failed to read stdout");
+                    }
+                    else
+                    {
+                        eprintln!("Failed to capture stdout.");
+                    }
 
-                if let Some(ref mut stderr) = child_process.stderr
-                {
-                    stderr.read_to_string(&mut error_output).expect("Failed to read stderr");
-                }
-                else
-                {
-                    eprintln!("Failed to capture stderr.");
-                }
-/*
-                let exit_status = child_process.wait().expect("Failed to wait for subprocess");
-                if !exit_status.success() {
-                    eprintln!("Subprocess failed with exit code: {:?}", exit_status);
-                }
-                eprintln!("Subprocess failed with exit code: {:?}", exit_status);
-                eprintln!("Subprocess error output:\n{}", error_output);
-
-                */
-                let exit_status = child_process.wait().expect("Failed to wait for subprocess");
-                if exit_status.success() {
-                    println!("Subprocess output:\n{}", output);
-                } else {
+                    if let Some(ref mut stderr) = child_process.stderr
+                    {
+                        stderr.read_to_string(&mut error_output).expect("Failed to read stderr");
+                    }
+                    else
+                    {
+                        eprintln!("Failed to capture stderr.");
+                    }
+    /*
+                    let exit_status = child_process.wait().expect("Failed to wait for subprocess");
+                    if !exit_status.success() {
+                        eprintln!("Subprocess failed with exit code: {:?}", exit_status);
+                    }
                     eprintln!("Subprocess failed with exit code: {:?}", exit_status);
                     eprintln!("Subprocess error output:\n{}", error_output);
-                }
-        });
+
+                    */
+                    let exit_status = child_process.wait().expect("Failed to wait for subprocess");
+                    if exit_status.success() {
+                        println!("Subprocess output:\n{}", output);
+                    } else {
+                        eprintln!("Subprocess failed with exit code: {:?}", exit_status);
+                        eprintln!("Subprocess error output:\n{}", error_output);
+                    }
+            });
+        }
         dbg!(request.SwapTicketID.clone().unwrap() + "/ENC_response_path.bin");
         let file_path = request.SwapTicketID.clone().unwrap() + "/ENC_response_path.bin";
 
@@ -721,12 +855,65 @@ fn handle_request(request: Request) -> (bool, Option<String>)
             return (status, Some(out.expect("not string").to_string()));
         }
     }
+    if request.request_type == "logInToPasswordEncryptedAccount"
+    {
+        status = true;
+        if request.Chain == None
+        {
+            let output = &(output.to_owned() + "Chain variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        if request.AccountName == None
+        {
+            let output = &(output.to_owned() + "AccountName variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        if request.Password == None
+        {
+            let output = &(output.to_owned() + "Password variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        else
+        {
+            let mut chainFrameworkPath = String::new();
+            if request.Chain.clone().unwrap() == "TestnetErgo"
+            {
+                chainFrameworkPath = "Ergo/SigmaParticle/".to_string();
+            }
+            if request.Chain.clone().unwrap() == "Sepolia"
+            {
+                chainFrameworkPath = "EVM/Atomicity/".to_string();
+            }
+            let enc_env_path = chainFrameworkPath + &request.AccountName.clone().unwrap() + "/.env.encrypted";
+            let mut pipe = Popen::create(&[
+                "python3",  "-u", "main.py", "proveEncEnvFilePasswordKnowledge",
+                &enc_env_path, &request.Password.clone().unwrap()
+            ], PopenConfig{
+                stdout: Redirection::Pipe, ..Default::default()}).expect("err");
+            let (out, err) = pipe.communicate(None).expect("err");
+            if let Some(exit_status) = pipe.poll()
+            {
+                println!("Out: {:?}, Err: {:?}", out, err);
+                if out == Some("True\n".to_string())
+                {
+//                    println!("PasswordKnowledgeProven");
+                    storage.loggedInAccountMap.write().insert(enc_env_path, request.Password.clone().unwrap());
+                    dbg!(&storage.loggedInAccountMap);
+                }
+                //push success cases to loggedInAccountMap here
+            }
+            else
+            {
+                pipe.terminate().expect("err");
+            }
+            return (status, Some(out.expect("not string").to_string().replace("\n", "")))
+        }
+    }
     else
     {
         return  (status, Some("Unknown Error".to_string()));
     }
 }
-type RequestMap = HashMap<String, String>;
 
 #[derive(Debug)]
 pub struct Badapikey;
@@ -787,18 +974,25 @@ pub struct Request {
     SepoliaID: Option<String>,
     SepoliaScan: Option<String>,
     SolidityCompilerVersion: Option<String>,
-    QGChannel: Option<String>
+    QGChannel: Option<String>,
+    Chain: Option<String>,
+    AccountName: Option<String>, 
+    Password: Option<String>
 }
+
+type StringStringMap = HashMap<String, String>;
 
 #[derive(Clone)]
 pub struct Storage {
-   request_map: Arc<RwLock<RequestMap>>
+   request_map: Arc<RwLock<StringStringMap>>,
+   loggedInAccountMap: Arc<RwLock<StringStringMap>>
 }
 
 impl Storage {
     fn new() -> Self {
         Storage {
             request_map: Arc::new(RwLock::new(HashMap::new())),
+            loggedInAccountMap: Arc::new(RwLock::new(HashMap::new()))
         }
     }
 }

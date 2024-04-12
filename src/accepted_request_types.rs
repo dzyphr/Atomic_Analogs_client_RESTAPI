@@ -14,7 +14,8 @@ pub fn private_accepted_request_types() -> Vec<&'static str>
         "initErgoAccountNonInteractive",
         "initSepoliaAccountNonInteractive",
         "checkElGQGChannelCorrectness",
-        "generateElGKeySpecificQG"
+        "generateElGKeySpecificQG",
+        "logInToPasswordEncryptedAccount"
     ]
 }
 
