@@ -359,6 +359,7 @@ fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
                         .arg("main.py")
                         .arg("Responder_CheckLockTimeRefund")
                         .arg(swapName)
+                        .arg(localChainAccountPassword)
                         .stdout(Stdio::piped()) // Redirect stdout to /dev/null or NUL to detach from parent
                         .stderr(Stdio::piped()) // Redirect stderr to /dev/null or NUL to detach from parent
                         .spawn()
