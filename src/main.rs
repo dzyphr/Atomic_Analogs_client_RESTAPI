@@ -496,19 +496,100 @@ fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
                 Err(err) => eprintln!("Error: {}", err),
             }
             */
-            let responderJSONPath = request.SwapTicketID.clone().unwrap() + "/responder.json";
-            let mut pipe = Popen::create(&[
-                "python3",  "-u", "main.py", "GeneralizedENC_ResponderClaimSubroutine", &responderJSONPath
-            ], PopenConfig{
-                stdout: Redirection::Pipe, ..Default::default()}).expect("err");
-            let (out, err) = pipe.communicate(None).expect("err");
-            if let Some(exit_status) = pipe.poll()
+            let mut file_path = request.SwapTicketID.clone().unwrap() + "/responder.json";
+            let mut responderJSONContents = fs::read_to_string(file_path).expect("error reading file");
+            let json_object: Value = serde_json::from_str(&responderJSONContents).expect("Invalid JSON");
+            let InitiatorChain = json_object["InitiatorChain"].to_string();
+            let ResponderChain = json_object["ResponderChain"].to_string();
+            let mut localChainAccountPassword = String::new();
+            let mut crossChainAccountPassword = String::new();
+            let responderCrossChainAccountName = accountNameFromChainAndIndex(InitiatorChain.clone(), 0);
+            let responderLocalChainAccountName = accountNameFromChainAndIndex(ResponderChain.clone(), 0);
+            dbg!(&InitiatorChain);
+            dbg!(&ResponderChain);
+            if InitiatorChain == "TestnetErgo"
             {
-                println!("Out: {:?}, Err: {:?}", out, err)
+                let chainFrameworkPath = "Ergo/SigmaParticle/";
+                let encEnvPath = chainFrameworkPath.to_owned() + responderCrossChainAccountName + "/.env.encrypted";
+                dbg!(&encEnvPath);
+                let exists = if let Ok(_) = fs::metadata(encEnvPath.clone()) {
+                    true
+                } else {
+                    false
+                };
+                if exists
+                {
+                    if checkAccountLoggedInStatus(&encEnvPath, storage.clone()) == true
+                    {
+                        crossChainAccountPassword = storage.loggedInAccountMap.read()[&encEnvPath].clone();
+                    }
+                    else
+                    {
+                        let errstr = InitiatorChain.to_owned() + " " +  &responderCrossChainAccountName + " is not logged in!";
+                        dbg!(&errstr);
+                        return (false, Some(errstr.to_string()))
+                    }
+                }
+            }
+            if ResponderChain == "Sepolia"
+            {
+                let chainFrameworkPath = "EVM/Atomicity/";
+                let encEnvPath = chainFrameworkPath.to_owned() + responderLocalChainAccountName + "/.env.encrypted";
+                dbg!(&encEnvPath);
+                let exists = if let Ok(_) = fs::metadata(encEnvPath.clone()) {
+                    true
+                } else {
+                    false
+                };
+                if exists
+                {
+                    if checkAccountLoggedInStatus(&encEnvPath, storage.clone()) == true
+                    {
+                        localChainAccountPassword = storage.loggedInAccountMap.read()[&encEnvPath].clone();
+                    }
+                    else
+                    {
+                        let errstr = ResponderChain.to_owned() + " " + &responderLocalChainAccountName + " is not logged in!";
+                        dbg!(&errstr);
+                        return (false, Some(errstr.to_string()))
+                    }
+                }
+            }
+            if localChainAccountPassword == String::new() && crossChainAccountPassword == String::new()
+            {
+                let responderJSONPath = request.SwapTicketID.clone().unwrap() + "/responder.json";
+                let mut pipe = Popen::create(&[
+                    "python3",  "-u", "main.py", "GeneralizedENC_ResponderClaimSubroutine", &responderJSONPath
+                ], PopenConfig{
+                    stdout: Redirection::Pipe, ..Default::default()}).expect("err");
+                let (out, err) = pipe.communicate(None).expect("err");
+                if let Some(exit_status) = pipe.poll()
+                {
+                    println!("Out: {:?}, Err: {:?}", out, err)
+                }
+                else
+                {
+                    pipe.terminate().expect("err");
+                }
             }
             else
             {
-                pipe.terminate().expect("err");
+                let responderJSONPath = request.SwapTicketID.clone().unwrap() + "/responder.json";
+                let mut pipe = Popen::create(&[
+                    "python3",  "-u", "main.py", 
+                    "GeneralizedENC_ResponderClaimSubroutine", &responderJSONPath,
+                    &localChainAccountPassword, &crossChainAccountPassword
+                ], PopenConfig{
+                    stdout: Redirection::Pipe, ..Default::default()}).expect("err");
+                let (out, err) = pipe.communicate(None).expect("err");
+                if let Some(exit_status) = pipe.poll()
+                {
+                    println!("Out: {:?}, Err: {:?}", out, err)
+                }
+                else
+                {
+                    pipe.terminate().expect("err");
+                }
             }
             return (status, Some("Claiming Swap".to_string()))
         }
@@ -544,20 +625,64 @@ fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
         }
         else
         {
-            let mut pipe = Popen::create(&[
-                "python3",  "-u", "main.py", "SigmaParticle_box_to_addr", &request.boxID.clone().unwrap()
-            ], PopenConfig{
-                stdout: Redirection::Pipe, ..Default::default()}).expect("err");
-            let (out, err) = pipe.communicate(None).expect("err");
-            if let Some(exit_status) = pipe.poll()
+            let ErgoAccountName = accountNameFromChainAndIndex("TestnetErgo".to_string(), 0);
+            let chainFrameworkPath = "Ergo/SigmaParticle/";
+            let encEnvPath = chainFrameworkPath.to_owned() + ErgoAccountName + "/.env.encrypted";
+            dbg!(&encEnvPath);
+            let exists = if let Ok(_) = fs::metadata(encEnvPath.clone()) {
+                true
+            } else {
+                false
+            };
+            let mut AccountPassword = String::new();
+            if exists
             {
-                println!("Out: {:?}, Err: {:?}", out, err)
+                if checkAccountLoggedInStatus(&encEnvPath, storage.clone()) == true
+                {
+                    AccountPassword = storage.loggedInAccountMap.read()[&encEnvPath].clone();
+                }
+                else
+                {
+                    let errstr =  "TestnetErgo ".to_owned() +  &ErgoAccountName + " is not logged in!";
+                    dbg!(&errstr);
+                    return (false, Some(errstr.to_string()))
+                }
+                let mut pipe = Popen::create(&[
+                    "python3",  "-u", "main.py", 
+                    "SigmaParticle_box_to_addr", 
+                    &request.boxID.clone().unwrap(), 
+                    &AccountPassword
+                ], PopenConfig{
+                    stdout: Redirection::Pipe, ..Default::default()}).expect("err");
+                let (out, err) = pipe.communicate(None).expect("err");
+                if let Some(exit_status) = pipe.poll()
+                {
+                    println!("Out: {:?}, Err: {:?}", out, err)
+                }
+                else
+                {
+                    pipe.terminate().expect("err");
+                }
+                return (status, Some(out.expect("not string").to_string()));
             }
             else
             {
-                pipe.terminate().expect("err");
+
+                let mut pipe = Popen::create(&[
+                    "python3",  "-u", "main.py", "SigmaParticle_box_to_addr", &request.boxID.clone().unwrap()
+                ], PopenConfig{
+                    stdout: Redirection::Pipe, ..Default::default()}).expect("err");
+                let (out, err) = pipe.communicate(None).expect("err");
+                if let Some(exit_status) = pipe.poll()
+                {
+                    println!("Out: {:?}, Err: {:?}", out, err)
+                }
+                else
+                {
+                    pipe.terminate().expect("err");
+                }
+                return (status, Some(out.expect("not string").to_string()));
             }
-            return (status, Some(out.expect("not string").to_string()));
         }
     }
     if request.request_type == "ElGamal_decrypt_swapFile"
