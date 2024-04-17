@@ -499,8 +499,8 @@ fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
             let mut file_path = request.SwapTicketID.clone().unwrap() + "/responder.json";
             let mut responderJSONContents = fs::read_to_string(file_path).expect("error reading file");
             let json_object: Value = serde_json::from_str(&responderJSONContents).expect("Invalid JSON");
-            let InitiatorChain = json_object["InitiatorChain"].to_string();
-            let ResponderChain = json_object["ResponderChain"].to_string();
+            let InitiatorChain = json_object["InitiatorChain"].to_string().replace("\"", "");
+            let ResponderChain = json_object["ResponderChain"].to_string().replace("\"", "");
             let mut localChainAccountPassword = String::new();
             let mut crossChainAccountPassword = String::new();
             let responderCrossChainAccountName = accountNameFromChainAndIndex(InitiatorChain.clone(), 0);
@@ -747,23 +747,99 @@ fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
             let output = &(output.to_owned() + "boxID variable is required!");
             return (status, Some(output.to_string()));
         }
+        if request.CrossChain == None
+        {
+            let output = &(output.to_owned() + "crossChain variable is required!");
+            return (status, Some(output.to_string()));
+        }
         else
         {
-            let mut pipe = Popen::create(&[
-                "python3",  "-u", "main.py", "checkBoxValue", &request.boxID.clone().unwrap(), 
-                &(request.SwapTicketID.clone().unwrap() + "/" + &request.fileName.clone().unwrap()), &request.SwapTicketID.clone().unwrap()
-            ], PopenConfig{
-                stdout: Redirection::Pipe, ..Default::default()}).expect("err");
-            let (out, err) = pipe.communicate(None).expect("err");
-            if let Some(exit_status) = pipe.poll()
+            if request.CrossChain.clone().unwrap() == "Sepolia"
             {
-                println!("Out: {:?}, Err: {:?}", out, err)
+                let ErgoAccountName = accountNameFromChainAndIndex("TestnetErgo".to_string(), 0);
+                let ergchainFrameworkPath = "Ergo/SigmaParticle/";
+                let ergencEnvPath = ergchainFrameworkPath.to_owned() + ErgoAccountName + "/.env.encrypted";
+                dbg!(&ergencEnvPath);
+                let ergoencenvexists = if let Ok(_) = fs::metadata(ergencEnvPath.clone()) {
+                    true
+                } else {
+                    false
+                };
+                let mut ErgoAccountPassword = String::new();
+                let SepoliaAccountName = accountNameFromChainAndIndex("Sepolia".to_string(), 0);
+                let sepoliachainFrameworkPath = "Ergo/SigmaParticle/";
+                let sepoliaencEnvPath = sepoliachainFrameworkPath.to_owned() + SepoliaAccountName + "/.env.encrypted";
+                dbg!(&sepoliaencEnvPath);
+                let sepoliaencenvexists = if let Ok(_) = fs::metadata(sepoliaencEnvPath.clone()) {
+                    true
+                } else {
+                    false
+                };
+                let mut SepoliaAccountPassword = String::new();
+                if ergoencenvexists && sepoliaencenvexists
+                {
+                    if checkAccountLoggedInStatus(&ergencEnvPath, storage.clone()) == true
+                    {
+                        ErgoAccountPassword = storage.loggedInAccountMap.read()[&ergencEnvPath].clone();
+                    }
+                    else
+                    {
+                        let errstr =  "TestnetErgo ".to_owned() +  &ErgoAccountName + " is not logged in!";
+                        dbg!(&errstr);
+                        return (false, Some(errstr.to_string()))
+                    }
+                    if checkAccountLoggedInStatus(&sepoliaencEnvPath, storage.clone()) == true
+                    {
+                        SepoliaAccountPassword = storage.loggedInAccountMap.read()[&sepoliaencEnvPath].clone();
+                    }
+                    else
+                    {
+                        let errstr =  "Sepolia ".to_owned() +  &SepoliaAccountName + " is not logged in!";
+                        dbg!(&errstr);
+                        return (false, Some(errstr.to_string()))
+                    }
+                    let mut pipe = Popen::create(&[
+                        "python3",  "-u", "main.py", "checkBoxValue", &request.boxID.clone().unwrap(),
+                        &(request.SwapTicketID.clone().unwrap() + "/" + 
+                          &request.fileName.clone().unwrap()), &request.SwapTicketID.clone().unwrap(),
+                        &ErgoAccountPassword, &SepoliaAccountPassword
+                    ], PopenConfig{
+                        stdout: Redirection::Pipe, ..Default::default()}).expect("err");
+                    let (out, err) = pipe.communicate(None).expect("err");
+                    if let Some(exit_status) = pipe.poll()
+                    {
+                        println!("Out: {:?}, Err: {:?}", out, err)
+                    }
+                    else
+                    {
+                        pipe.terminate().expect("err");
+                    }
+                    return (status, Some(out.expect("not string").to_string()));
+                }
+                else
+                {
+                    let mut pipe = Popen::create(&[
+                        "python3",  "-u", "main.py", "checkBoxValue", &request.boxID.clone().unwrap(), 
+                        &(request.SwapTicketID.clone().unwrap() + "/" + &request.fileName.clone().unwrap()), &request.SwapTicketID.clone().unwrap()
+                    ], PopenConfig{
+                        stdout: Redirection::Pipe, ..Default::default()}).expect("err");
+                    let (out, err) = pipe.communicate(None).expect("err");
+                    if let Some(exit_status) = pipe.poll()
+                    {
+                        println!("Out: {:?}, Err: {:?}", out, err)
+                    }
+                    else
+                    {
+                        pipe.terminate().expect("err");
+                    }
+                    return (status, Some(out.expect("not string").to_string()));
+                }
             }
             else
             {
-                pipe.terminate().expect("err");
+                let errstring: String = "Unhandled Cross Chain:".to_owned() + &request.CrossChain.clone().unwrap();
+                return (status, Some(errstring));
             }
-            return (status, Some(out.expect("not string").to_string()));
         }
     }
     if request.request_type == "updateMainEnv"
@@ -1103,7 +1179,8 @@ pub struct Request {
     QGChannel: Option<String>,
     Chain: Option<String>,
     AccountName: Option<String>, 
-    Password: Option<String>
+    Password: Option<String>,
+    CrossChain: Option<String>
 }
 
 type StringStringMap = HashMap<String, String>;
