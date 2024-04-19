@@ -767,7 +767,7 @@ fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
                 };
                 let mut ErgoAccountPassword = String::new();
                 let SepoliaAccountName = accountNameFromChainAndIndex("Sepolia".to_string(), 0);
-                let sepoliachainFrameworkPath = "Ergo/SigmaParticle/";
+                let sepoliachainFrameworkPath = "EVM/Atomicity/";
                 let sepoliaencEnvPath = sepoliachainFrameworkPath.to_owned() + SepoliaAccountName + "/.env.encrypted";
                 dbg!(&sepoliaencEnvPath);
                 let sepoliaencenvexists = if let Ok(_) = fs::metadata(sepoliaencEnvPath.clone()) {
