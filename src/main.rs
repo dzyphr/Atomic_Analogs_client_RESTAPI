@@ -623,6 +623,11 @@ fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
             let output = &(output.to_owned() + "boxID variable is required!");
             return (status, Some(output.to_string()));
         }
+        if request.swapName == None
+        {
+            let output = &(output.to_owned() + "swapName variable is required!");
+            return (status, Some(output.to_string()));
+        }
         else
         {
             let ErgoAccountName = accountNameFromChainAndIndex("TestnetErgo".to_string(), 0);
@@ -651,6 +656,7 @@ fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
                     "python3",  "-u", "main.py", 
                     "SigmaParticle_box_to_addr", 
                     &request.boxID.clone().unwrap(), 
+                    &request.swapName.clone().unwrap(),
                     &AccountPassword
                 ], PopenConfig{
                     stdout: Redirection::Pipe, ..Default::default()}).expect("err");
@@ -669,7 +675,9 @@ fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
             {
 
                 let mut pipe = Popen::create(&[
-                    "python3",  "-u", "main.py", "SigmaParticle_box_to_addr", &request.boxID.clone().unwrap()
+                    "python3",  "-u", "main.py", "SigmaParticle_box_to_addr", 
+                    &request.boxID.clone().unwrap(),
+                    &request.swapName.clone().unwrap()
                 ], PopenConfig{
                     stdout: Redirection::Pipe, ..Default::default()}).expect("err");
                 let (out, err) = pipe.communicate(None).expect("err");
