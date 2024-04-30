@@ -42,28 +42,126 @@ use update_fns::{private_update_request_map};
 mod str_tools;
 use str_tools::{rem_first_and_last};
 
-
-fn accountNameFromChainAndIndex(chain: String, index: usize) -> &'static str
+fn getAllEnabledChainsVec() -> Vec<&'static str>
 {
-    if chain == "TestnetErgo"
-    {
-        let accountvec = vec![
+    return vec![
+        "TestnetErgo",
+        "Sepolia"
+    ];
+}
+
+fn accountNameFromChainAndIndex(chain: &str, index: usize, getSize: bool) -> Result<String, String> {
+    if chain == "TestnetErgo" {
+        let account_vec = vec![
             "responderEnv"
         ];
-        return accountvec[index]
-    }
-    if chain == "Sepolia"
-    {
-        let accountvec = vec![
+        if !getSize {
+            if let Some(account) = account_vec.get(index) {
+                return Ok(account.to_string());
+            } else {
+                return Err("Index out of bounds".to_string());
+            }
+        } else {
+            return Ok(account_vec.len().to_string());
+        }
+    } else if chain == "Sepolia" {
+        let account_vec = vec![
             "basic_framework"
         ];
-        return accountvec[index]
-    }
-    else
-    {
-        return "chain not found"
+        if !getSize {
+            if let Some(account) = account_vec.get(index) {
+                return Ok(account.to_string());
+            } else {
+                return Err("Index out of bounds".to_string());
+            }
+        } else {
+            return Ok(account_vec.len().to_string());
+        }
+    } else {
+        return Err("Chain not found".to_string());
     }
 }
+
+
+fn getAllAccountsVec() -> Vec<String>
+{
+    let allEnabledChains = getAllEnabledChainsVec();
+    let mut allChainAccountsVec = vec![];
+    for chain in allEnabledChains
+    {
+        let currentChainNumberOfAccounts = accountNameFromChainAndIndex(chain, 0, true);
+        let mut u32_currentChainNumberOfAccounts = currentChainNumberOfAccounts.unwrap().parse::<u32>().unwrap();
+        while u32_currentChainNumberOfAccounts.clone() > 0
+        {
+            allChainAccountsVec.push(
+                accountNameFromChainAndIndex(
+                    chain, u32_currentChainNumberOfAccounts.clone() as usize, false
+                ).unwrap()
+            );
+            u32_currentChainNumberOfAccounts = u32_currentChainNumberOfAccounts.clone() - 1
+        }
+    }
+    return allChainAccountsVec;
+}
+
+fn getAllAcountsMap() -> HashMap<String, String>
+{
+    let allEnabledChains = getAllEnabledChainsVec();
+    let mut allChainAccountsMap = HashMap::new();
+    let mut chainFrameworkPath = String::new();
+    for chain in allEnabledChains
+    {
+        if chain == "TestnetErgo"
+        {
+            chainFrameworkPath = "Ergo/SigmaParticle/".to_string();
+        }
+        else if chain == "Sepolia"
+        {
+            chainFrameworkPath = "EVM/Atomicity/".to_string()
+        }
+        let currentChainNumberOfAccounts = accountNameFromChainAndIndex(chain, 0, true);
+        let mut u32_currentChainNumberOfAccounts = currentChainNumberOfAccounts.unwrap().parse::<u32>().unwrap();
+        while u32_currentChainNumberOfAccounts.clone() > 0
+        {
+            let currentAccount = 
+                accountNameFromChainAndIndex(
+                    chain, u32_currentChainNumberOfAccounts.clone().try_into().unwrap(), false
+                ).unwrap();
+            let reg_env_path = 
+                chainFrameworkPath.clone() + 
+                &currentAccount + 
+                "/.env";
+            let enc_env_path = 
+                chainFrameworkPath.clone() +
+                &currentAccount +
+                "/.env.encrypted";
+            if Path::new(&reg_env_path).exists()
+            {
+                allChainAccountsMap.insert(reg_env_path, currentAccount);
+            }
+            else if Path::new(&enc_env_path).exists()
+            {
+                allChainAccountsMap.insert(enc_env_path, currentAccount);
+            }
+            u32_currentChainNumberOfAccounts = u32_currentChainNumberOfAccounts.clone() - 1
+        }
+    }
+    allChainAccountsMap
+}
+//we need a more descriptive obj
+//lets get:
+//each chain
+//each account per chain
+//check the path of each account according to chain framework path
+//check if its .enc or not
+//save into a map that looks like
+//{
+//  "accountname1": "fullenvpath1",
+//  "accountname2": "fullenvpath2"
+//}
+//this obj gets sent back when called for by the UI to load existing accounts
+//still need to figure initial part where all folders except expected are checked for as accounts
+
 
 fn checkAccountLoggedInStatus(encEnvPath: &str, storage: Storage) -> bool
 {
@@ -206,8 +304,8 @@ fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
 
         let swapName = request.SwapTicketID.clone().unwrap();
         status = true;
-        let responderCrossChainAccountName = accountNameFromChainAndIndex(request.responderCrossChain.clone().unwrap(), 0);
-        let responderLocalChainAccountName = accountNameFromChainAndIndex(request.responderLocalChain.clone().unwrap(), 0);
+        let responderCrossChainAccountName = accountNameFromChainAndIndex(&request.responderCrossChain.clone().unwrap(), 0, false);
+        let responderLocalChainAccountName = accountNameFromChainAndIndex(&request.responderLocalChain.clone().unwrap(), 0, false);
         let mut localChainAccountPassword = String::new();
         let mut crossChainAccountPassword = String::new();
         let mut InitiatorChain = request.responderCrossChain.clone().unwrap();
@@ -217,7 +315,7 @@ fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
         if InitiatorChain == "TestnetErgo"
         {
             let chainFrameworkPath = "Ergo/SigmaParticle/";
-            let encEnvPath = chainFrameworkPath.to_owned() + responderCrossChainAccountName + "/.env.encrypted";
+            let encEnvPath = chainFrameworkPath.to_owned() + &responderCrossChainAccountName.clone().unwrap() + "/.env.encrypted";
             dbg!(&encEnvPath);
             let exists = if let Ok(_) = fs::metadata(encEnvPath.clone()) {
                 true
@@ -232,7 +330,7 @@ fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
                 }
                 else
                 {
-                    let errstr = InitiatorChain.to_owned() + " " +  &responderCrossChainAccountName + " is not logged in!";
+                    let errstr = InitiatorChain.to_owned() + " " +  &responderCrossChainAccountName.clone().unwrap() + " is not logged in!";
                     dbg!(&errstr);
                     return (false, Some(errstr.to_string()))
                 }
@@ -241,7 +339,7 @@ fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
         if ResponderChain == "Sepolia"
         {
             let chainFrameworkPath = "EVM/Atomicity/";
-            let encEnvPath = chainFrameworkPath.to_owned() + responderLocalChainAccountName + "/.env.encrypted";
+            let encEnvPath = chainFrameworkPath.to_owned() + &responderLocalChainAccountName.clone().unwrap() + "/.env.encrypted";
             dbg!(&encEnvPath);
             let exists = if let Ok(_) = fs::metadata(encEnvPath.clone()) {
                 true
@@ -256,7 +354,7 @@ fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
                 }
                 else
                 {
-                    let errstr = ResponderChain.to_owned() + " " + &responderLocalChainAccountName + " is not logged in!";
+                    let errstr = ResponderChain.to_owned() + " " + &responderLocalChainAccountName.unwrap() + " is not logged in!";
                     dbg!(&errstr);
                     return (false, Some(errstr.to_string()))
                 }
@@ -266,8 +364,8 @@ fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
         {
             let mut pipe = Popen::create(&[
                 "python3",  "-u", "main.py", "GeneralizeENC_ResponseSubroutine",
-                &swapName, responderCrossChainAccountName,
-                responderLocalChainAccountName.clone(), &request.ElGamalKey.clone().unwrap(), 
+                &swapName, &responderCrossChainAccountName.unwrap(),
+                &responderLocalChainAccountName.unwrap().clone(), &request.ElGamalKey.clone().unwrap(), 
                 &request.ElGamalKeyPath.clone().unwrap(), &request.responderCrossChain.clone().unwrap(), 
                 &request.responderLocalChain.clone().unwrap(), &request.swapAmount.clone().unwrap()
             ], PopenConfig{
@@ -336,8 +434,8 @@ fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
             //TODO ENC account endpoint usage with args
             let mut pipe = Popen::create(&[
                 "python3",  "-u", "main.py", "GeneralizeENC_ResponseSubroutine",
-                &swapName, responderCrossChainAccountName,
-                responderLocalChainAccountName.clone(), &request.ElGamalKey.clone().unwrap(),
+                &swapName, &responderCrossChainAccountName.unwrap(),
+                &responderLocalChainAccountName.unwrap().clone(), &request.ElGamalKey.clone().unwrap(),
                 &request.ElGamalKeyPath.clone().unwrap(), &request.responderCrossChain.clone().unwrap(),
                 &request.responderLocalChain.clone().unwrap(), &request.swapAmount.clone().unwrap(),
                 &localChainAccountPassword, &crossChainAccountPassword
@@ -503,14 +601,14 @@ fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
             let ResponderChain = json_object["ResponderChain"].to_string().replace("\"", "");
             let mut localChainAccountPassword = String::new();
             let mut crossChainAccountPassword = String::new();
-            let responderCrossChainAccountName = accountNameFromChainAndIndex(InitiatorChain.clone(), 0);
-            let responderLocalChainAccountName = accountNameFromChainAndIndex(ResponderChain.clone(), 0);
+            let responderCrossChainAccountName = accountNameFromChainAndIndex(&InitiatorChain.clone(), 0, false);
+            let responderLocalChainAccountName = accountNameFromChainAndIndex(&ResponderChain.clone(), 0, false);
             dbg!(&InitiatorChain);
             dbg!(&ResponderChain);
             if InitiatorChain == "TestnetErgo"
             {
                 let chainFrameworkPath = "Ergo/SigmaParticle/";
-                let encEnvPath = chainFrameworkPath.to_owned() + responderCrossChainAccountName + "/.env.encrypted";
+                let encEnvPath = chainFrameworkPath.to_owned() + &responderCrossChainAccountName.clone().unwrap() + "/.env.encrypted";
                 dbg!(&encEnvPath);
                 let exists = if let Ok(_) = fs::metadata(encEnvPath.clone()) {
                     true
@@ -525,7 +623,7 @@ fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
                     }
                     else
                     {
-                        let errstr = InitiatorChain.to_owned() + " " +  &responderCrossChainAccountName + " is not logged in!";
+                        let errstr = InitiatorChain.to_owned() + " " +  &responderCrossChainAccountName.unwrap() + " is not logged in!";
                         dbg!(&errstr);
                         return (false, Some(errstr.to_string()))
                     }
@@ -534,7 +632,7 @@ fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
             if ResponderChain == "Sepolia"
             {
                 let chainFrameworkPath = "EVM/Atomicity/";
-                let encEnvPath = chainFrameworkPath.to_owned() + responderLocalChainAccountName + "/.env.encrypted";
+                let encEnvPath = chainFrameworkPath.to_owned() + &responderLocalChainAccountName.clone().unwrap() + "/.env.encrypted";
                 dbg!(&encEnvPath);
                 let exists = if let Ok(_) = fs::metadata(encEnvPath.clone()) {
                     true
@@ -549,7 +647,7 @@ fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
                     }
                     else
                     {
-                        let errstr = ResponderChain.to_owned() + " " + &responderLocalChainAccountName + " is not logged in!";
+                        let errstr = ResponderChain.to_owned() + " " + &responderLocalChainAccountName.unwrap() + " is not logged in!";
                         dbg!(&errstr);
                         return (false, Some(errstr.to_string()))
                     }
@@ -630,9 +728,9 @@ fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
         }
         else
         {
-            let ErgoAccountName = accountNameFromChainAndIndex("TestnetErgo".to_string(), 0);
+            let ErgoAccountName = accountNameFromChainAndIndex("TestnetErgo", 0, false);
             let chainFrameworkPath = "Ergo/SigmaParticle/";
-            let encEnvPath = chainFrameworkPath.to_owned() + ErgoAccountName + "/.env.encrypted";
+            let encEnvPath = chainFrameworkPath.to_owned() + &ErgoAccountName.clone().unwrap() + "/.env.encrypted";
             dbg!(&encEnvPath);
             let exists = if let Ok(_) = fs::metadata(encEnvPath.clone()) {
                 true
@@ -648,7 +746,7 @@ fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
                 }
                 else
                 {
-                    let errstr =  "TestnetErgo ".to_owned() +  &ErgoAccountName + " is not logged in!";
+                    let errstr =  "TestnetErgo ".to_owned() +  &ErgoAccountName.unwrap() + " is not logged in!";
                     dbg!(&errstr);
                     return (false, Some(errstr.to_string()))
                 }
@@ -764,9 +862,9 @@ fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
         {
             if request.CrossChain.clone().unwrap() == "Sepolia"
             {
-                let ErgoAccountName = accountNameFromChainAndIndex("TestnetErgo".to_string(), 0);
+                let ErgoAccountName = accountNameFromChainAndIndex("TestnetErgo", 0, false);
                 let ergchainFrameworkPath = "Ergo/SigmaParticle/";
-                let ergencEnvPath = ergchainFrameworkPath.to_owned() + ErgoAccountName + "/.env.encrypted";
+                let ergencEnvPath = ergchainFrameworkPath.to_owned() + &ErgoAccountName.clone().unwrap() + "/.env.encrypted";
                 dbg!(&ergencEnvPath);
                 let ergoencenvexists = if let Ok(_) = fs::metadata(ergencEnvPath.clone()) {
                     true
@@ -774,9 +872,9 @@ fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
                     false
                 };
                 let mut ErgoAccountPassword = String::new();
-                let SepoliaAccountName = accountNameFromChainAndIndex("Sepolia".to_string(), 0);
+                let SepoliaAccountName = accountNameFromChainAndIndex("Sepolia", 0, false);
                 let sepoliachainFrameworkPath = "EVM/Atomicity/";
-                let sepoliaencEnvPath = sepoliachainFrameworkPath.to_owned() + SepoliaAccountName + "/.env.encrypted";
+                let sepoliaencEnvPath = sepoliachainFrameworkPath.to_owned() + &SepoliaAccountName.clone().unwrap() + "/.env.encrypted";
                 dbg!(&sepoliaencEnvPath);
                 let sepoliaencenvexists = if let Ok(_) = fs::metadata(sepoliaencEnvPath.clone()) {
                     true
@@ -792,7 +890,7 @@ fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
                     }
                     else
                     {
-                        let errstr =  "TestnetErgo ".to_owned() +  &ErgoAccountName + " is not logged in!";
+                        let errstr =  "TestnetErgo ".to_owned() +  &ErgoAccountName.unwrap() + " is not logged in!";
                         dbg!(&errstr);
                         return (false, Some(errstr.to_string()))
                     }
@@ -802,7 +900,7 @@ fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
                     }
                     else
                     {
-                        let errstr =  "Sepolia ".to_owned() +  &SepoliaAccountName + " is not logged in!";
+                        let errstr =  "Sepolia ".to_owned() +  &SepoliaAccountName.unwrap() + " is not logged in!";
                         dbg!(&errstr);
                         return (false, Some(errstr.to_string()))
                     }
