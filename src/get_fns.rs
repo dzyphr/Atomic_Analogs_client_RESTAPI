@@ -6,15 +6,15 @@ pub async fn get_ElGamalPubs() -> Result<impl warp::Reply, warp::Rejection>
     readJSONfromfilepath(filepath).await
 }
 
-pub async fn get_ElGamalQChannels() -> Result<impl warp::Reply, warp::Rejection>
+pub async fn get_ElGamalQGChannels() -> Result<impl warp::Reply, warp::Rejection>
 {
-    let filepath = "ElGamalQChannels.json";
+    let filepath = "ElGamalQGChannels.json";
     readJSONfromfilepath(filepath).await
 }
 
-pub async fn get_QPubkeyArray() -> Result<impl warp::Reply, warp::Rejection>
+pub async fn get_QGPubkeyArray() -> Result<impl warp::Reply, warp::Rejection>
 {
-    let filepath = "QPubkeyArray.json";
+    let filepath = "QGPubkeyArray.json";
     readJSONfromfilepath(filepath).await
 }
 

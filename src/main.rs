@@ -32,9 +32,9 @@ use API_keys::{accepted_private_api_keys, accepted_public_api_keys};
 mod accepted_request_types;
 use accepted_request_types::{private_accepted_request_types, public_accepted_request_types};
 mod get_fns;
-use get_fns::{private_get_request_map, get_QPubkeyArray, get_ElGamalQChannels, get_ElGamalPubs}; 
+use get_fns::{private_get_request_map, get_QGPubkeyArray, get_ElGamalQGChannels, get_ElGamalPubs}; 
 mod json_tools;
-use json_tools::{readJSONfromfilepath};
+use json_tools::{readJSONfromfilepath, readJSONfromString};
 mod delete_fns;
 use delete_fns::{private_delete_request};
 mod update_fns;
@@ -123,9 +123,10 @@ fn getAllAcountsMap() -> HashMap<String, String>
         let mut u32_currentChainNumberOfAccounts = currentChainNumberOfAccounts.unwrap().parse::<u32>().unwrap();
         while u32_currentChainNumberOfAccounts.clone() > 0
         {
+            let index = <u32 as TryInto<usize>>::try_into(u32_currentChainNumberOfAccounts.clone()).unwrap() - 1;
             let currentAccount = 
                 accountNameFromChainAndIndex(
-                    chain, u32_currentChainNumberOfAccounts.clone().try_into().unwrap(), false
+                    chain, index, false
                 ).unwrap();
             let reg_env_path = 
                 chainFrameworkPath.clone() + 
@@ -148,6 +149,23 @@ fn getAllAcountsMap() -> HashMap<String, String>
     }
     allChainAccountsMap
 }
+
+fn StringStringMap_to_json_String(map: HashMap<String, String>) -> String
+{
+    let json_map: Map<String, Value> = map
+        .into_iter()
+        .map(|(k, v)| (k, Value::String(v)))
+        .collect();
+     serde_json::to_string(&json_map).unwrap()
+}
+
+pub async fn get_allChainAccountsMapJSON() -> Result<impl warp::Reply, warp::Rejection>
+{
+    let allAccountsMap = getAllAcountsMap();
+    let allAcountsMapJSONString = StringStringMap_to_json_String(allAccountsMap);
+    readJSONfromString(allAcountsMapJSONString).await
+}
+
 //we need a more descriptive obj
 //lets get:
 //each chain
@@ -173,11 +191,12 @@ fn checkAccountLoggedInStatus(encEnvPath: &str, storage: Storage) -> bool
 async fn main() {
     let version =  "v0.0.1";
     let main_path  = "requests";
-    let public_main_path = "publicrequests"; //might never need this until client features include server hosting type abilities
+//    let public_main_path = "publicrequests"; //might never need this until client features include server hosting type abilities
 //    let OrderTypesPath = "ordertypes";
     let ElGamalPubsPath = "ElGamalPubs";
     let ElGamalQChannelsPath = "ElGamalQGChannels";
-    let QPubkeyArrayPath = "QGPubkeyArray";
+    let QGPubkeyArrayPath = "QGPubkeyArray";
+    let AllChainAccountsMapPath = "AllChainAccountsMap";
     let cors = cors()
         .allow_any_origin()
         .allow_methods(vec!["GET", "POST"])
@@ -243,23 +262,27 @@ async fn main() {
         .and(warp::path::end())
         .and_then(get_ElGamalPubs)
         .with(cors.clone());
-    let get_ElGamalQChannels = warp::get()
+    let get_ElGamalQGChannels = warp::get()
         .and(warp::path(version))
         .and(warp::path(ElGamalQChannelsPath))
         .and(warp::path::end())
-        .and_then(get_ElGamalQChannels)
+        .and_then(get_ElGamalQGChannels)
         .with(cors.clone());
-    let get_QPubkeyArray = warp::get()
+    let get_QGPubkeyArray = warp::get()
         .and(warp::path(version))
-        .and(warp::path(public_main_path))
-        .and(warp::path(QPubkeyArrayPath))
+        .and(warp::path(QGPubkeyArrayPath))
         .and(warp::path::end())
-        .and_then(get_QPubkeyArray)
-        .with(cors.clone());;
-        
+        .and_then(get_QGPubkeyArray)
+        .with(cors.clone());
+    let get_AllChainAccountsMap = warp::get()
+        .and(warp::path(version))
+        .and(warp::path(AllChainAccountsMapPath))
+        .and(warp::path::end())
+        .and_then(get_allChainAccountsMapJSON)
+        .with(cors.clone());        
     let routes = 
         add_requests.or(get_requests).or(update_request).or(private_delete_request)
-        .or(get_ElGamalPubs).or(get_ElGamalQChannels).or(get_QPubkeyArray);
+        .or(get_ElGamalPubs).or(get_ElGamalQGChannels).or(get_QGPubkeyArray).or(get_AllChainAccountsMap);
     warp::serve(routes)
         .run(([127, 0, 0, 1], 3031))
         .await;

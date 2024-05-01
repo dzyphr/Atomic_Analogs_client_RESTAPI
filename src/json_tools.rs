@@ -14,3 +14,7 @@ pub async fn readJSONfromfilepath(filepath: &str) -> Result<impl warp::Reply, wa
     }
 }
 
+pub async fn readJSONfromString(JSONString: String) -> Result<impl warp::Reply, warp::Rejection>
+{
+    Ok(warp::reply::json(&json!(JSONString)))
+}
