@@ -1240,6 +1240,181 @@ fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
             return (status, Some(out.expect("not string").to_string().replace("\n", "")))
         }
     }
+    if request.request_type == "hotReloadAllSwapStates"
+    {
+        status = true;
+        let possible_swap_states = vec![
+            "initiated", "uploadingResponseContract", "uploadedResponseContract", 
+            "fundingResponseContract", "fundedResponseContract", "responding", 
+            "responded", "finalized", "verifyingFinalizedContractValues", 
+            "verifiedFinalizedContractValues", "claiming", "refunding", 
+            "claimed", "refunded", "terminated", "tbd"
+        ];
+        let current_dir = Path::new(".");
+        let mut uuid_dirs = vec![];
+        let mut swapstatemap = HashMap::<String, String>::new();
+        if let Ok(subdirs) = fs::read_dir(current_dir)
+        {
+            for subdir in subdirs
+            {
+                if let Ok(subdir) = subdir
+                {
+                    let file_name = subdir.file_name().to_string_lossy().into_owned();
+                    if let Some(name) = Some(file_name)
+                    {   
+                        if let Ok(uuid) = Uuid::parse_str(&name)
+                        {
+                            if uuid.get_version() == Some(uuid::Version::Md5)
+                            {
+                                uuid_dirs.push(name);
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        for dir in uuid_dirs
+        {
+            //TODO get local and cross chain account name from resp_J
+            //check if enc env files if so check if logged in before running
+            //call with passwords when available
+            //
+            let resp_J_path = dir.to_string() + "/responder.json";
+            let resp_J = fs::read_to_string(resp_J_path.clone()).expect("Failed to read file");
+            let v: Value = serde_json::from_str(&resp_J).expect("failed to parse JSON");
+            let InitiatorChain = &v["InitiatorChain"];
+            let ResponderChain = &v["ResponderChain"];
+            if InitiatorChain == "TestnetErgo" && ResponderChain == "Sepolia"
+            {
+                let responderErgoAccountName = &v["responderErgoAccountName"];
+                let responderSepoliaAccountName = &v["responderSepoliaAccountName"];
+                let ErgoAccountName = responderErgoAccountName.to_string();
+                let ergchainFrameworkPath = "Ergo/SigmaParticle/";
+                let ergencEnvPath = ergchainFrameworkPath.to_owned() + &ErgoAccountName.clone() + "/.env.encrypted";
+                dbg!(&ergencEnvPath);
+                let ergoencenvexists = if let Ok(_) = fs::metadata(ergencEnvPath.clone()) {
+                    true
+                } else {
+                    false
+                };
+                let mut ErgoAccountPassword = String::new();
+                let SepoliaAccountName = responderSepoliaAccountName.to_string();
+                let sepoliachainFrameworkPath = "EVM/Atomicity/";
+                let sepoliaencEnvPath = sepoliachainFrameworkPath.to_owned() + &SepoliaAccountName.clone() + "/.env.encrypted";
+                dbg!(&sepoliaencEnvPath);
+                let sepoliaencenvexists = if let Ok(_) = fs::metadata(sepoliaencEnvPath.clone()) {
+                    true
+                } else {
+                    false
+                };
+                let mut SepoliaAccountPassword = String::new();
+                if ergoencenvexists && sepoliaencenvexists
+                {
+                    if checkAccountLoggedInStatus(&ergencEnvPath, storage.clone()) == true
+                    {
+                        ErgoAccountPassword = storage.loggedInAccountMap.read()[&ergencEnvPath].clone();
+                    }
+                    else
+                    {
+                        let errstr =  "TestnetErgo ".to_owned() +  &ErgoAccountName + " is not logged in!";
+                        dbg!(&errstr);
+//                        return (false, Some(errstr.to_string()))
+                    }
+                    if checkAccountLoggedInStatus(&sepoliaencEnvPath, storage.clone()) == true
+                    {
+                        SepoliaAccountPassword = storage.loggedInAccountMap.read()[&sepoliaencEnvPath].clone();
+                    }
+                    else
+                    {
+                        let errstr =  "Sepolia ".to_owned() +  &SepoliaAccountName + " is not logged in!";
+                        dbg!(&errstr);
+//                        return (false, Some(errstr.to_string()))
+                    }
+                }
+
+
+
+                let SwapStatePath = dir.to_string() + "/SwapState";
+                let SwapState = fs::read_to_string(SwapStatePath).expect("Failed to read file");
+                swapstatemap.insert(dir.to_string(), SwapState.clone());
+                    
+                let out = match possible_swap_states.iter().enumerate().find(|(_, &x)| x == SwapState) {
+                    Some((index, _)) => {
+                        match index {
+                            0..=5 => 
+                                GeneralizeENC_ResponseSubroutine_hotreload(
+                                    dir.to_string(), SwapState.to_string(),
+                                    ErgoAccountPassword.clone().to_string(), SepoliaAccountPassword.clone().to_string()
+                                ),
+                            6..=10 => 
+                                GeneralizedENC_ResponderClaimSubroutine_hotreload(
+                                    resp_J_path.to_string(), SwapState.to_string(),
+                                    ErgoAccountPassword.clone().to_string(), SepoliaAccountPassword.clone().to_string()
+                                ),
+                            _ => {
+                                // Handle other cases
+                                "unhandled swap state".to_string()
+                            }
+                        }
+                    },
+                    None => {
+                        // Handle case when SwapState is not found in possible_swap_states
+                        "unknown swap state".to_string()
+                    }
+                };
+
+                fn GeneralizeENC_ResponseSubroutine_hotreload(
+                    dir: String, SwapState: String, ErgoAccountPassword: String, SepoliaAccountPassword: String
+                ) -> String
+                {
+                    let mut pipe = Popen::create(&[
+                        "python3",  "-u", "main.py", "GeneralizeENC_ResponseSubroutine_hotreload", &dir,
+                        &ErgoAccountPassword, &SepoliaAccountPassword, &SwapState
+                    ], PopenConfig{
+                        stdout: Redirection::Pipe, ..Default::default()}).expect("err");
+                    let (out, err) = pipe.communicate(None).expect("err");
+                    if let Some(exit_status) = pipe.poll()
+                    {
+                        println!("Out: {:?}, Err: {:?}", out, err)
+                    }
+                    else
+                    {
+                        pipe.terminate().expect("err");
+                    }
+                    return out.expect("out is none").to_string()
+                }
+
+                fn GeneralizedENC_ResponderClaimSubroutine_hotreload(
+                    resp_J_path: String, SwapState: String, ErgoAccountPassword: String , SepoliaAccountPassword: String 
+                ) -> String
+                {
+                    let mut pipe = Popen::create(&[
+                        "python3",  "-u", "main.py", "GeneralizedENC_ResponderClaimSubroutine_hotreload", &resp_J_path,
+                        &ErgoAccountPassword, &SepoliaAccountPassword, &SwapState
+                    ], PopenConfig{
+                        stdout: Redirection::Pipe, ..Default::default()}).expect("err");
+                    let (out, err) = pipe.communicate(None).expect("err");
+                    if let Some(exit_status) = pipe.poll()
+                    {
+                        println!("Out: {:?}, Err: {:?}", out, err)
+                    }
+                    else
+                    {
+                        pipe.terminate().expect("err");
+                    }
+                    return out.expect("out is none").to_string()
+                }
+
+            }
+        }
+        let out = serde_json::to_string(&json!(swapstatemap)).unwrap();
+        return (status, Some(out));
+        //go through every uuid3 dir
+        //get the state, save dirname and state to map to return to UI / caller
+        //make an API call depending on the state
+        //if a subsequent call is needed to finish the swap we need to determine whether
+        //to call it in this logic or let the UI / caller handle it
+    }
     else
     {
         return  (status, Some("Unknown Error".to_string()));

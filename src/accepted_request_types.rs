@@ -15,7 +15,8 @@ pub fn private_accepted_request_types() -> Vec<&'static str>
         "initSepoliaAccountNonInteractive",
         "checkElGQGChannelCorrectness",
         "generateElGKeySpecificQG",
-        "logInToPasswordEncryptedAccount"
+        "logInToPasswordEncryptedAccount",
+        "hotReloadAllSwapStates"
     ]
 }
 
