@@ -1327,6 +1327,7 @@ fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
                         {
                             let errstr =  "TestnetErgo ".to_owned() +  &ErgoAccountName + " is not logged in!";
                             dbg!(&errstr);
+                            break
     //                        return (false, Some(errstr.to_string()))
                         }
                         if checkAccountLoggedInStatus(&sepoliaencEnvPath, storage.clone()) == true
@@ -1337,6 +1338,7 @@ fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
                         {
                             let errstr =  "Sepolia ".to_owned() +  &SepoliaAccountName + " is not logged in!";
                             dbg!(&errstr);
+                            break
     //                        return (false, Some(errstr.to_string()))
                         }
                     }
@@ -1344,34 +1346,38 @@ fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
                     let SwapState = fs::read_to_string(SwapStatePath).expect("Failed to read file");
                     swapstatemap.insert(dir.to_string(), SwapState.clone());
                         
-                    let out = match possible_swap_states.iter().enumerate().find(|(_, &x)| x == SwapState) {
+                    let (out, updatedswapstatemap) = match possible_swap_states.iter().enumerate().find(|(_, &x)| x == SwapState) {
                         Some((index, _)) => {
                             match index {
                                 0..=5 => 
                                     GeneralizeENC_ResponseSubroutine_hotreload(
                                         dir.to_string(), SwapState.to_string(),
-                                        SepoliaAccountPassword.clone().to_string(), ErgoAccountPassword.clone().to_string()
+                                        SepoliaAccountPassword.clone().to_string(), ErgoAccountPassword.clone().to_string(),
+                                        swapstatemap.clone()
                                     ),
                                 6..=10 => 
                                     GeneralizedENC_ResponderClaimSubroutine_hotreload(
+                                        dir.to_string(),
                                         resp_J_path.to_string(), SwapState.to_string(),
+                                        swapstatemap.clone(),
                                         SepoliaAccountPassword.clone().to_string(), ErgoAccountPassword.clone().to_string()
                                     ),
                                 _ => {
                                     // Handle other cases
-                                    "unhandled swap state".to_string()
+                                    ("unhandled swap state".to_string(), swapstatemap)
                                 }
                             }
                         },
                         None => {
                             // Handle case when SwapState is not found in possible_swap_states
-                            "unknown swap state".to_string()
+                            ("unknown swap state".to_string(), swapstatemap)
                         }
                     };
+                    swapstatemap = updatedswapstatemap;
 
                     fn GeneralizeENC_ResponseSubroutine_hotreload(
-                        dir: String, SwapState: String, SepoliaAccountPassword: String, ErgoAccountPassword: String
-                    ) -> String
+                        dir: String, SwapState: String, SepoliaAccountPassword: String, ErgoAccountPassword: String, mut swapstatemap: HashMap<String, String>
+                    ) -> (String, HashMap<String, String>)
                     {
                         let mut pipe = Popen::create(&[
                             "python3",  "-u", "main.py", "GeneralizeENC_ResponseSubroutine_hotreload", &dir,
@@ -1390,13 +1396,36 @@ fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
                         {
                             pipe.terminate().expect("err");
                         }
-                        return out.expect("out is none").to_string()
+                        (out.expect("out is none").to_string(), swapstatemap)
                     }
 
                     fn GeneralizedENC_ResponderClaimSubroutine_hotreload(
-                        resp_J_path: String, SwapState: String, SepoliaAccountPassword: String , ErgoAccountPassword: String 
-                    ) -> String
+                        dir: String, resp_J_path: String, SwapState: String, 
+                        mut swapstatemap: HashMap<String, String>,
+                        SepoliaAccountPassword: String , ErgoAccountPassword: String 
+                    ) -> (String, HashMap<String, String>)
                     {
+                        let possible_swap_states = vec![
+                            "initiated", "uploadingResponseContract", "uploadedResponseContract",
+                            "fundingResponseContract", "fundedResponseContract", "responding",
+                            "responded", "finalized", "verifyingFinalizedContractValues",
+                            "verifiedFinalizedContractValues", "claiming", "refunding",
+                            "claimed", "refunded", "terminated", "tbd"
+                        ];
+                        if SwapState == possible_swap_states[6]
+                        {
+                            let finpathstr = dir.clone() + "/ENC_finalization.bin";
+                            let fin_path = Path::new(&finpathstr);
+                            if !fin_path.exists()
+                            {
+                                swapstatemap.insert(dir.to_string(), "responded_unsubmitted".to_string());
+                                return ("responded_unsubmitted".to_string(), swapstatemap)
+                            }
+                            else
+                            {
+                                dbg!("path exists: ", finpathstr);
+                            }
+                        }
                         let mut pipe = Popen::create(&[
                             "python3",  "-u", "main.py", "GeneralizedENC_ResponderClaimSubroutine_hotreload", &resp_J_path,
                             &ErgoAccountPassword, &SepoliaAccountPassword, &SwapState
@@ -1414,7 +1443,7 @@ fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
                         {
                             pipe.terminate().expect("err");
                         }
-                        return out.expect("out is none").to_string()
+                        return (out.expect("out is none").to_string(), swapstatemap)
                     }
 
                 }
