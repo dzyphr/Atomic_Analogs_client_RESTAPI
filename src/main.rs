@@ -25,6 +25,8 @@ mod math;
 use math::{big_is_prime};
 use std::collections::BTreeMap;
 use serde_json::from_str;
+use reqwest::Error;
+use tokio::runtime::Runtime;
 mod json_fns;
 use json_fns::{json_body, delete_json};
 mod API_keys;
@@ -39,6 +41,8 @@ mod delete_fns;
 use delete_fns::{private_delete_request};
 mod update_fns;
 use update_fns::{private_update_request_map};
+mod swap_fns;
+use swap_fns::{makeSwapDir};
 mod str_tools;
 use str_tools::{rem_first_and_last};
 
@@ -288,7 +292,7 @@ async fn main() {
         .await;
 }
 
-fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
+async fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
 {
     let mut output = "";
     let mut status = false;
@@ -546,6 +550,7 @@ fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
             let output = &(output.to_owned() + "ENCInit variable is required!");
             return (status, Some(output.to_string()));
         }
+        /*
         match fs::create_dir(request.SwapTicketID.clone().expect("error swapticketid to string").to_string()) {
             Ok(_) => println!("Directory created successfully"),
             Err(err) => eprintln!("Error: {}", err),
@@ -559,7 +564,8 @@ fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
         match file.write_all(data.as_bytes()) {
             Ok(_) => println!("Data written to file successfully"),
             Err(err) => eprintln!("Error: {}", err),
-        }
+        }*/
+        makeSwapDir(&request.SwapTicketID.clone().unwrap(), &request.ENCInit.clone().unwrap());
         return (status, Some("swap directory generated".to_string()))
     }
     if request.request_type == "writeSwapFile"
@@ -1459,6 +1465,87 @@ fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
         //if a subsequent call is needed to finish the swap we need to determine whether
         //to call it in this logic or let the UI / caller handle it
     }
+    if request.request_type == "startSwapFromUI"
+    {
+        if request.OrderTypeUUID == None
+        {
+            let output = &(output.to_owned() + "OrderTypeUUID variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        if request.QGChannel == None
+        {
+            let output = &(output.to_owned() + "QGChannel variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        if request.ElGamalKey == None
+        {
+            let output = &(output.to_owned() + "ElGamalKey variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        if request.MarketURL == None
+        {
+            let output = &(output.to_owned() + "MarketURL variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        if request.MarketAPIKey == None
+        {
+            let output = &(output.to_owned() + "MarketAPIKey variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        status = true;
+        let mut swapDataMap: HashMap<String, String> = HashMap::new();
+         
+        swapDataMap.insert("OrderTypeUUID".to_string(), request.OrderTypeUUID.clone().unwrap().replace("\\", "").replace("\"", ""));
+        swapDataMap.insert("QGChannel".to_string(), request.QGChannel.clone().unwrap().replace("\\", "").replace("\"", ""));
+        swapDataMap.insert("ElGamalKey".to_string(), request.ElGamalKey.clone().unwrap().replace("\\", "").replace("\"", ""));
+        swapDataMap.insert("MarketURL".to_string(), request.MarketURL.clone().unwrap().replace("\\", "").replace("\"", ""));
+        swapDataMap.insert("MarketAPIKey".to_string(), request.MarketAPIKey.clone().unwrap().replace("\\", "").replace("\"", ""));
+        dbg!(&swapDataMap);
+
+        let requestEncryptedInitiationData = json!({
+            "id": Uuid::new_v4().to_string(),
+            "request_type": "requestEncryptedInitiation",
+            "OrderTypeUUID": swapDataMap["OrderTypeUUID"].replace("\\", "").replace("\"", ""),
+            "QGChannel": swapDataMap["QGChannel"].replace("\\", "").replace("\"", ""),
+            "ElGamalKey": swapDataMap["ElGamalKey"].replace("\\", "").replace("\"", "")
+        });
+
+        let server_public_requests_url = swapDataMap["MarketURL"].replace("ordertypes", "publicrequests").replace("\\", "").replace("\"", "");
+        dbg!(&server_public_requests_url);
+        let bearer_token = request.MarketAPIKey.clone().unwrap().replace("\\", "").replace("\"", "");
+        let response = reqwest::Client::new()
+            .post(server_public_requests_url.clone())
+            .json(&requestEncryptedInitiationData)
+            .header("Authorization", format!("Bearer {}", bearer_token))
+            .send()
+            .await.expect("failed to POST");
+        if response.status().is_success() {
+            println!("POST request successful");
+            let response_text = response.text().await.expect("failed to get POST response text");
+            let jr: Value = serde_json::from_str(&response_text).expect("response text is not json");
+            let jr1 = jr.as_str().unwrap(); //can be stored and then parsed as valid json at this point
+            let jrobj: Value = serde_json::from_str(&jr1).unwrap();
+            let SwapTicketID = jrobj.get("SwapTicketID").expect("SwapTicketID not found").to_string().replace("\\", "").replace("\"", "");
+            let ENCinit = jrobj.get("ENC_init.bin").expect("ENC_init.bin not found").to_string();
+            makeSwapDir(&SwapTicketID.clone(), &ENCinit.clone());
+            //TODO implement proper false result in makeSwapDir use it to determine response here
+            swapDataMap.insert("SwapState".to_string(), "initiated".to_string());
+            storage.swapStateMap.write().insert(SwapTicketID.clone().to_string(), swapDataMap.clone());
+            let swapStateMapString = format!("{:#?}", &*storage.swapStateMap.read());
+            fs::write("SwapStateMap", swapStateMapString).expect("Unable to write file");
+            //TODO create a function loop that gets called as new swaps are successfully initialized
+            //use the loop to keep track of the state and keep communication w server 
+            //accordingly, can also use the loop potentially to handle hot reloading
+            //for example the loop should see that an initiation occured, create a response 
+            //then submit it to the relevant market server and handle the resulting response
+            //the loop can call claim or refund depening on what data it has
+            //this should be able to handle both hot reloading and basic interaction UX
+            return (status, Some("New Swap Dir Created Successfully".to_string()));
+        } else {
+            println!("POST request failed: {}", response.status());
+            return (status, Some("Failed to request Encrypted Initiation".to_string()));
+        }
+    }
     else
     {
         return  (status, Some("Unknown Error".to_string()));
@@ -1528,22 +1615,29 @@ pub struct Request {
     Chain: Option<String>,
     AccountName: Option<String>, 
     Password: Option<String>,
-    CrossChain: Option<String>
+    CrossChain: Option<String>,
+    MarketURL: Option<String>,
+    OrderTypeUUID: Option<String>,
+    MarketAPIKey: Option<String>
 }
 
 type StringStringMap = HashMap<String, String>;
+type SingleNestMap = HashMap<String, HashMap<String, String>>;
 
 #[derive(Clone)]
 pub struct Storage {
    request_map: Arc<RwLock<StringStringMap>>,
-   loggedInAccountMap: Arc<RwLock<StringStringMap>>
+   loggedInAccountMap: Arc<RwLock<StringStringMap>>,
+   swapStateMap: Arc<RwLock<SingleNestMap>>
+
 }
 
 impl Storage {
     fn new() -> Self {
         Storage {
             request_map: Arc::new(RwLock::new(HashMap::new())),
-            loggedInAccountMap: Arc::new(RwLock::new(HashMap::new()))
+            loggedInAccountMap: Arc::new(RwLock::new(HashMap::new())),
+            swapStateMap: Arc::new(RwLock::new(HashMap::new()))
         }
     }
 }
