@@ -1482,6 +1482,11 @@ async fn handle_request(request: Request, storage: Storage) -> (bool, Option<Str
             let output = &(output.to_owned() + "ElGamalKey variable is required!");
             return (status, Some(output.to_string()));
         }
+        if request.ServerElGamalKey == None
+        {
+            let output = &(output.to_owned() + "ServerElGamalKey variable is required!");
+            return (status, Some(output.to_string()));
+        }
         if request.ElGamalKeyPath == None
         {
             let output = &(output.to_owned() + "ElGamalKeyPath variable is required!");
@@ -1534,6 +1539,7 @@ async fn handle_request(request: Request, storage: Storage) -> (bool, Option<Str
         swapDataMap.insert("OrderTypeUUID".to_string(), request.OrderTypeUUID.clone().unwrap().replace("\\", "").replace("\"", ""));
         swapDataMap.insert("QGChannel".to_string(), request.QGChannel.clone().unwrap().replace("\\", "").replace("\"", ""));
         swapDataMap.insert("ElGamalKey".to_string(), request.ElGamalKey.clone().unwrap().replace("\\", "").replace("\"", ""));
+        swapDataMap.insert("ServerElGamalKey".to_string(), request.ServerElGamalKey.clone().unwrap().replace("\\", "").replace("\"", ""));
         swapDataMap.insert("ElGamalKeyPath".to_string(), request.ElGamalKeyPath.clone().unwrap().replace("\\", "").replace("\"", ""));
         swapDataMap.insert("MarketURL".to_string(), request.MarketURL.clone().unwrap().replace("\\", "").replace("\"", ""));
         swapDataMap.insert("MarketAPIKey".to_string(), request.MarketAPIKey.clone().unwrap().replace("\\", "").replace("\"", ""));
@@ -1560,7 +1566,7 @@ async fn handle_request(request: Request, storage: Storage) -> (bool, Option<Str
         });
 
         let server_public_requests_url = swapDataMap["MarketURL"].replace("ordertypes", "publicrequests").replace("\\", "").replace("\"", "");
-        dbg!(&server_public_requests_url);
+//        dbg!(&server_public_requests_url);
         let bearer_token = request.MarketAPIKey.clone().unwrap().replace("\\", "").replace("\"", "");
         let response = reqwest::Client::new()
             .post(server_public_requests_url.clone())
@@ -1580,7 +1586,7 @@ async fn handle_request(request: Request, storage: Storage) -> (bool, Option<Str
             //ENC init not being written properly
             let ENCinit = jrobj.get("ENC_init.bin").expect("ENC_init.bin not found").to_string()
                 .replace("\"", "").replace("\\n", "\n");
-            println!("{:#?}", ENCinit);
+//            println!("{:#?}", ENCinit);
 
             
             makeSwapDir(&SwapTicketID.clone(), &ENCinit.clone()).await;
@@ -1603,7 +1609,7 @@ async fn handle_request(request: Request, storage: Storage) -> (bool, Option<Str
                 let ErgoAccountName = &swapDataMap["CrossChainAccount"];
                 let ergchainFrameworkPath = "Ergo/SigmaParticle/";
                 let ergencEnvPath = ergchainFrameworkPath.to_owned() + &ErgoAccountName.clone() + "/.env.encrypted";
-                dbg!(&ergencEnvPath);
+//                dbg!(&ergencEnvPath);
                 let ergoencenvexists = if let Ok(_) = fs::metadata(ergencEnvPath.clone()) {
                     true
                 } else {
@@ -1613,7 +1619,7 @@ async fn handle_request(request: Request, storage: Storage) -> (bool, Option<Str
                 let SepoliaAccountName =  &swapDataMap["LocalChainAccount"];
                 let sepoliachainFrameworkPath = "EVM/Atomicity/";
                 let sepoliaencEnvPath = sepoliachainFrameworkPath.to_owned() + &SepoliaAccountName.clone() + "/.env.encrypted";
-                dbg!(&sepoliaencEnvPath);
+//                dbg!(&sepoliaencEnvPath);
                 let sepoliaencenvexists = if let Ok(_) = fs::metadata(sepoliaencEnvPath.clone()) {
                     true
                 } else {
@@ -1753,7 +1759,8 @@ pub struct Request {
     LocalChain: Option<String>,
     LocalChainAccount: Option<String>,
     CrossChainAccount: Option<String>,
-    SwapRole: Option<String>
+    SwapRole: Option<String>,
+    ServerElGamalKey: Option<String>
 }
 
 type StringStringMap = HashMap<String, String>;
