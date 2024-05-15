@@ -1482,6 +1482,11 @@ async fn handle_request(request: Request, storage: Storage) -> (bool, Option<Str
             let output = &(output.to_owned() + "ElGamalKey variable is required!");
             return (status, Some(output.to_string()));
         }
+        if request.ElGamalKeyPath == None
+        {
+            let output = &(output.to_owned() + "ElGamalKeyPath variable is required!");
+            return (status, Some(output.to_string()));
+        }
         if request.MarketURL == None
         {
             let output = &(output.to_owned() + "MarketURL variable is required!");
@@ -1492,22 +1497,66 @@ async fn handle_request(request: Request, storage: Storage) -> (bool, Option<Str
             let output = &(output.to_owned() + "MarketAPIKey variable is required!");
             return (status, Some(output.to_string()));
         }
+        if request.LocalChain == None
+        {
+            let output = &(output.to_owned() + "LocalChain variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        if request.CrossChain == None
+        {
+            let output = &(output.to_owned() + "CrossChain variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        if request.LocalChainAccount == None
+        {
+            let output = &(output.to_owned() + "LocalChainAccount variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        if request.CrossChainAccount == None
+        {
+            let output = &(output.to_owned() + "CrossChainAccount variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        if request.SwapRole == None
+        {
+            let output = &(output.to_owned() + "SwapRole variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        if request.swapAmount == None
+        {
+            let output = &(output.to_owned() + "swapAmount variable is required!");
+            return (status, Some(output.to_string()));
+        }
+
         status = true;
         let mut swapDataMap: HashMap<String, String> = HashMap::new();
          
         swapDataMap.insert("OrderTypeUUID".to_string(), request.OrderTypeUUID.clone().unwrap().replace("\\", "").replace("\"", ""));
         swapDataMap.insert("QGChannel".to_string(), request.QGChannel.clone().unwrap().replace("\\", "").replace("\"", ""));
         swapDataMap.insert("ElGamalKey".to_string(), request.ElGamalKey.clone().unwrap().replace("\\", "").replace("\"", ""));
+        swapDataMap.insert("ElGamalKeyPath".to_string(), request.ElGamalKeyPath.clone().unwrap().replace("\\", "").replace("\"", ""));
         swapDataMap.insert("MarketURL".to_string(), request.MarketURL.clone().unwrap().replace("\\", "").replace("\"", ""));
         swapDataMap.insert("MarketAPIKey".to_string(), request.MarketAPIKey.clone().unwrap().replace("\\", "").replace("\"", ""));
+        swapDataMap.insert("LocalChain".to_string(), request.LocalChain.clone().unwrap().replace("\\", "").replace("\"", ""));
+        swapDataMap.insert("CrossChain".to_string(), request.CrossChain.clone().unwrap().replace("\\", "").replace("\"", ""));
+        swapDataMap.insert("SwapRole".to_string(), request.SwapRole.clone().unwrap().replace("\\", "").replace("\"", ""));
+        swapDataMap.insert("SwapAmount".to_string(), request.swapAmount.clone().unwrap().replace("\\", "").replace("\"", ""));
+        swapDataMap.insert(
+            "LocalChainAccount".to_string(),                
+            request.LocalChainAccount.clone().unwrap().replace("\\", "").replace("\"", "")
+        );
+        swapDataMap.insert(
+            "CrossChainAccount".to_string(), 
+            request.CrossChainAccount.clone().unwrap().replace("\\", "").replace("\"", "")
+        );
         dbg!(&swapDataMap);
 
         let requestEncryptedInitiationData = json!({
             "id": Uuid::new_v4().to_string(),
             "request_type": "requestEncryptedInitiation",
-            "OrderTypeUUID": swapDataMap["OrderTypeUUID"].replace("\\", "").replace("\"", ""),
-            "QGChannel": swapDataMap["QGChannel"].replace("\\", "").replace("\"", ""),
-            "ElGamalKey": swapDataMap["ElGamalKey"].replace("\\", "").replace("\"", "")
+            "OrderTypeUUID": swapDataMap["OrderTypeUUID"],
+            "QGChannel": swapDataMap["QGChannel"],
+            "ElGamalKey": swapDataMap["ElGamalKey"]
         });
 
         let server_public_requests_url = swapDataMap["MarketURL"].replace("ordertypes", "publicrequests").replace("\\", "").replace("\"", "");
@@ -1526,13 +1575,95 @@ async fn handle_request(request: Request, storage: Storage) -> (bool, Option<Str
             let jr1 = jr.as_str().unwrap(); //can be stored and then parsed as valid json at this point
             let jrobj: Value = serde_json::from_str(&jr1).unwrap();
             let SwapTicketID = jrobj.get("SwapTicketID").expect("SwapTicketID not found").to_string().replace("\\", "").replace("\"", "");
-            let ENCinit = jrobj.get("ENC_init.bin").expect("ENC_init.bin not found").to_string();
-            makeSwapDir(&SwapTicketID.clone(), &ENCinit.clone());
+
+
+            //ENC init not being written properly
+            let ENCinit = jrobj.get("ENC_init.bin").expect("ENC_init.bin not found").to_string()
+                .replace("\"", "").replace("\\n", "\n");
+            println!("{:#?}", ENCinit);
+
+            
+            makeSwapDir(&SwapTicketID.clone(), &ENCinit.clone()).await;
+
+
+
+
+
             //TODO implement proper false result in makeSwapDir use it to determine response here
             swapDataMap.insert("SwapState".to_string(), "initiated".to_string());
             storage.swapStateMap.write().insert(SwapTicketID.clone().to_string(), swapDataMap.clone());
-            let swapStateMapString = format!("{:#?}", &*storage.swapStateMap.read());
+//            let swapStateMapString = format!("{:#?}", &*storage.swapStateMap.read());
+            let swapStateMapString = serde_json::to_string_pretty(&*storage.swapStateMap.read()).unwrap();            
             fs::write("SwapStateMap", swapStateMapString).expect("Unable to write file");
+            
+            let mut localChainAccountPassword = String::new();
+            let mut crossChainAccountPassword = String::new();
+            if swapDataMap["LocalChain"] == "Sepolia" && swapDataMap["CrossChain"] == "TestnetErgo"
+            {
+                let ErgoAccountName = &swapDataMap["CrossChainAccount"];
+                let ergchainFrameworkPath = "Ergo/SigmaParticle/";
+                let ergencEnvPath = ergchainFrameworkPath.to_owned() + &ErgoAccountName.clone() + "/.env.encrypted";
+                dbg!(&ergencEnvPath);
+                let ergoencenvexists = if let Ok(_) = fs::metadata(ergencEnvPath.clone()) {
+                    true
+                } else {
+                    false
+                };
+                let mut ErgoAccountPassword = String::new();
+                let SepoliaAccountName =  &swapDataMap["LocalChainAccount"];
+                let sepoliachainFrameworkPath = "EVM/Atomicity/";
+                let sepoliaencEnvPath = sepoliachainFrameworkPath.to_owned() + &SepoliaAccountName.clone() + "/.env.encrypted";
+                dbg!(&sepoliaencEnvPath);
+                let sepoliaencenvexists = if let Ok(_) = fs::metadata(sepoliaencEnvPath.clone()) {
+                    true
+                } else {
+                    false
+                };
+                let mut SepoliaAccountPassword = String::new();
+                if ergoencenvexists && sepoliaencenvexists
+                {
+                    if checkAccountLoggedInStatus(&ergencEnvPath, storage.clone()) == true
+                    {
+                        crossChainAccountPassword = storage.loggedInAccountMap.read()[&ergencEnvPath].clone();
+                    }
+                    else
+                    {
+                        let errstr =  "TestnetErgo ".to_owned() +  &ErgoAccountName + " is not logged in!";
+                        dbg!(&errstr);
+                        return (false, Some(errstr));
+                    }
+                    if checkAccountLoggedInStatus(&sepoliaencEnvPath, storage.clone()) == true
+                    {
+                        localChainAccountPassword = storage.loggedInAccountMap.read()[&sepoliaencEnvPath].clone();
+                    }
+                    else
+                    {
+                        let errstr =  "Sepolia ".to_owned() +  &SepoliaAccountName + " is not logged in!";
+                        dbg!(&errstr);
+                        return (false, Some(errstr));
+                    }
+                }
+
+            }
+            let mut pipe = Popen::create(&[
+                "python3",  "-u", "main.py", "watchSwapLoop", &SwapTicketID,
+                &localChainAccountPassword, &crossChainAccountPassword,
+            ], PopenConfig{
+                detached: true,
+                stdout: Redirection::Pipe,
+                ..Default::default()
+            }).expect("err");
+            let (out, err) = pipe.communicate(None).expect("err");
+            if let Some(exit_status) = pipe.poll()
+            {
+                println!("Out: {:?}, Err: {:?}", out, err)
+            }
+            else
+            {
+                pipe.terminate().expect("err");
+            }
+        
+
             //TODO create a function loop that gets called as new swaps are successfully initialized
             //use the loop to keep track of the state and keep communication w server 
             //accordingly, can also use the loop potentially to handle hot reloading
@@ -1618,7 +1749,11 @@ pub struct Request {
     CrossChain: Option<String>,
     MarketURL: Option<String>,
     OrderTypeUUID: Option<String>,
-    MarketAPIKey: Option<String>
+    MarketAPIKey: Option<String>,
+    LocalChain: Option<String>,
+    LocalChainAccount: Option<String>,
+    CrossChainAccount: Option<String>,
+    SwapRole: Option<String>
 }
 
 type StringStringMap = HashMap<String, String>;
