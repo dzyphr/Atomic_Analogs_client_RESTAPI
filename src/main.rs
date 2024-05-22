@@ -191,6 +191,175 @@ fn checkAccountLoggedInStatus(encEnvPath: &str, storage: Storage) -> bool
     return s.contains_key(encEnvPath)
 }
 
+fn load_local_swap_state_map() -> SingleNestMap 
+{
+    let filename = "SwapStateMap";
+    let contents = fs::read_to_string(filename).expect("cant read SwapStateMap");
+    let map: SingleNestMap = serde_json::from_str(&contents).expect("cant parse SwapStateMap into serde_json object");
+    return map
+}
+
+fn check_swap_state_map_against_swap_dirs(mut map: SingleNestMap) -> SingleNestMap
+{
+    let current_dir = Path::new(".");
+    let mut uuid_dirs = vec![];
+    let mut swapstatemap = HashMap::<String, String>::new();
+    if let Ok(subdirs) = fs::read_dir(current_dir)
+    {
+        for subdir in subdirs
+        {
+            if let Ok(subdir) = subdir
+            {
+                let file_name = subdir.file_name().to_string_lossy().into_owned();
+                if let Some(name) = Some(file_name.clone())
+                {
+                    if let Ok(uuid) = Uuid::parse_str(&name.clone())
+                    {
+                        dbg!(&name.clone());
+                        uuid_dirs.push(name.clone());
+                        /*if uuid.get_version() == Some(uuid::Version::Md5) //this check for
+                         * specific version doesnt currently work but is possible
+                        {
+                        }*/
+                    }
+                }
+            }
+        }
+    };
+    if uuid_dirs.is_empty()
+    {
+        if !map.is_empty()
+        {
+            map.clear();
+        }
+    }
+    for dir in &uuid_dirs
+    {
+        if !map.contains_key(&dir.to_string())
+        {
+            let mut swapDataMap = StringStringMap::new();
+        //    swapDataMap.insert("OrderTypeUUID".to_string(), request.OrderTypeUUID.clone().unwrap().replace("\\", "").replace("\"", ""));
+        //    TODO add OrderTypeUUID to responder.json so we can add it in this instance\
+            let resp_J_filename = dir.clone().to_string() + "/responder.json";
+            let resp_J: Value = serde_json::from_str(&fs::read_to_string(resp_J_filename).unwrap()).unwrap();
+            let ElGamalKeyPath = resp_J.get("ElGamalKeyPath").unwrap().to_string().replace("\\", "").replace("\"", "");
+            dbg!(&ElGamalKeyPath);
+            let ElGObj: Value = serde_json::from_str(&fs::read_to_string(ElGamalKeyPath).unwrap()).unwrap();
+            let QGChannel = ElGObj.get("q").unwrap().to_string().replace("\\", "").replace("\"", "") + "," + &ElGObj.get("g").unwrap().to_string().replace("\\", "").replace("\"", "");
+            swapDataMap.insert("QGChannel".to_string(), QGChannel);
+            swapDataMap.insert("ElGamalKey".to_string(), ElGObj.get("Public Key").unwrap().to_string().replace("\\", "").replace("\"", ""));
+            swapDataMap.insert("ServerElGamalKey".to_string(), resp_J.get("ElGamalKey").unwrap().to_string().replace("\\", "").replace("\"", ""));
+            swapDataMap.insert("ElGamalKeyPath".to_string(), resp_J.get("ElGamalKeyPath").unwrap().to_string().replace("\\", "").replace("\"", ""));
+            swapDataMap.insert("MarketURL".to_string(), resp_J.get("MarketURL").unwrap().to_string().replace("\\", "").replace("\"", ""));
+            swapDataMap.insert("MarketAPIKey".to_string(), resp_J.get("MarketAPIKey").unwrap().to_string().replace("\\", "").replace("\"", ""));
+            swapDataMap.insert("LocalChain".to_string(), resp_J.get("LocalChain").unwrap().to_string().replace("\\", "").replace("\"", ""));
+            swapDataMap.insert("CrossChain".to_string(), resp_J.get("CrossChain").unwrap().to_string().replace("\\", "").replace("\"", ""));
+            swapDataMap.insert("SwapRole".to_string(), resp_J.get("SwapRole").unwrap().to_string().replace("\\", "").replace("\"", ""));
+            swapDataMap.insert("SwapAmount".to_string(), resp_J.get("SwapAmount").unwrap().to_string().replace("\\", "").replace("\"", ""));
+            swapDataMap.insert("LocalChainAccount".to_string(), resp_J.get("LocalChainAccount").unwrap().to_string().replace("\\", "").replace("\"", ""));
+            swapDataMap.insert("CrossChainAccount".to_string(), resp_J.get("CrossChainAccount").unwrap().to_string().replace("\\", "").replace("\"", ""));
+            map.insert(dir.to_string(), swapDataMap);
+
+        }
+    }
+    for swap in map.clone().keys()
+    {
+        if !uuid_dirs.contains(&swap)
+        {
+            map.remove(&swap.clone()); //remove swaps that cant be found locally
+        }
+    }
+    return map
+    //TODO if swap found that was not on map for whatever reason load it? not sure when this would
+    //occur
+    //if nothing to update return true
+    //if something to update, do the update in here and return a false 
+    //to signal there was a discrepancy
+}
+
+async fn hot_reload(storage: Storage)
+{
+    for swap in storage.swapStateMap.read().clone().keys()
+    {
+        let mut localChainAccountPassword = String::new();
+        let mut crossChainAccountPassword = String::new();
+        let swapDataMap = storage.swapStateMap.read()[&swap.clone()].clone();
+        let mut properlyLoggedIn = false;
+        if swapDataMap["LocalChain"] == "Sepolia" && swapDataMap["CrossChain"] == "TestnetErgo"
+        {
+            let ErgoAccountName = &swapDataMap["CrossChainAccount"];
+            let ergchainFrameworkPath = "Ergo/SigmaParticle/";
+            let ergencEnvPath = ergchainFrameworkPath.to_owned() + &ErgoAccountName.clone() + "/.env.encrypted";
+            let ergoencenvexists = if let Ok(_) = fs::metadata(ergencEnvPath.clone()) {
+                true
+            } else {
+                false
+            };
+            let mut ErgoAccountPassword = String::new();
+            let SepoliaAccountName =  &swapDataMap["LocalChainAccount"];
+            let sepoliachainFrameworkPath = "EVM/Atomicity/";
+            let sepoliaencEnvPath = sepoliachainFrameworkPath.to_owned() + &SepoliaAccountName.clone() + "/.env.encrypted";
+            let sepoliaencenvexists = if let Ok(_) = fs::metadata(sepoliaencEnvPath.clone()) {
+                true
+            } else {
+                false
+            };
+            let mut SepoliaAccountPassword = String::new();
+            if ergoencenvexists && sepoliaencenvexists
+            {
+                if checkAccountLoggedInStatus(&ergencEnvPath, storage.clone()) == true
+                {
+                    crossChainAccountPassword = storage.loggedInAccountMap.read()[&ergencEnvPath].clone();
+                }
+                else
+                {
+                    let errstr =  "TestnetErgo ".to_owned() +  &ErgoAccountName + " is not logged in!";
+                    dbg!(&errstr);
+                }
+                if checkAccountLoggedInStatus(&sepoliaencEnvPath, storage.clone()) == true
+                {
+                    localChainAccountPassword = storage.loggedInAccountMap.read()[&sepoliaencEnvPath].clone();
+                }
+                else
+                {
+                    let errstr =  "Sepolia ".to_owned() +  &SepoliaAccountName + " is not logged in!";
+                    dbg!(&errstr);
+                }
+                if checkAccountLoggedInStatus(&sepoliaencEnvPath, storage.clone()) == true && checkAccountLoggedInStatus(&ergencEnvPath, storage.clone()) == true
+                {
+                    properlyLoggedIn = true;
+                }
+            }
+            else
+            {
+                //TODO handle cases where one acc is encrypted and another is not
+                properlyLoggedIn = true;
+            }
+        }
+        if properlyLoggedIn == true
+        {
+            dbg!("hot reloading swap: ".to_string() +  &swap);
+            let mut pipe = Popen::create(&[
+                "python3",  "-u", "main.py", "watchSwapLoop", &swap,
+                &localChainAccountPassword, &crossChainAccountPassword,
+            ], PopenConfig{
+                detached: true,
+                stdout: Redirection::Pipe,
+                ..Default::default()
+            }).expect("err");
+            let (out, err) = pipe.communicate(None).expect("err");
+            if let Some(exit_status) = pipe.poll()
+            {
+                println!("Out: {:?}, Err: {:?}", out, err)
+            }
+            else
+            {
+                pipe.terminate().expect("err");
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let version =  "v0.0.1";
@@ -205,8 +374,9 @@ async fn main() {
         .allow_any_origin()
         .allow_methods(vec!["GET", "POST"])
         .allow_headers(vec!["Content-Type", "Authorization"]);
-    let storage = Storage::new();
-    let storage_filter = warp::any().map(move || storage.clone());
+    let mut storage = Storage::new();
+    let sc = storage.clone();
+    let storage_filter = warp::any().map(move || sc.clone());
     let bearer_private_api_key_filter = warp::header::<String>("Authorization").and_then( | auth_header: String | async move {
             if auth_header.starts_with("Bearer ")
             {
@@ -226,6 +396,12 @@ async fn main() {
                 Err(warp::reject::custom(Noapikey))
             }
     });
+    let mut loaded_swap_state_map = check_swap_state_map_against_swap_dirs(load_local_swap_state_map());
+    storage.update_swap_state_map(loaded_swap_state_map.clone());
+    hot_reload(storage.clone()).await;
+    //need to load the local swap state map into storage as well as check it against existing swapfiles(maybe not mandatory)
+    //after updating the map in storage and on disk(maybe not mandatory) other methods can safely utilize it
+    //we can at that point properly hot reload any swaps that are in an unfinished state
     //add and update use the same function just differ in post and put
     let add_requests = warp::post()
         .and(warp::path(version))
@@ -1249,7 +1425,7 @@ async fn handle_request(request: Request, storage: Storage) -> (bool, Option<Str
     if request.request_type == "hotReloadAllSwapStates"
     {
         status = true;
-        let possible_swap_states = vec![
+    /*    let possible_swap_states = vec![
             "initiated", "uploadingResponseContract", "uploadedResponseContract", 
             "fundingResponseContract", "fundedResponseContract", "responding", 
             "responded", "finalized", "verifyingFinalizedContractValues", 
@@ -1454,11 +1630,14 @@ async fn handle_request(request: Request, storage: Storage) -> (bool, Option<Str
 
                 }
             }
-        }
+        }*/
         //after we reload the swaps the states in the map will change, we need to run an update of
         //the map here to provide accurate data feedback to the UI
-        let out = serde_json::to_string(&json!(swapstatemap)).unwrap();
-        return (status, Some(out));
+//        let out = serde_json::to_string(&json!(swapstatemap)).unwrap();
+//
+        hot_reload(storage.clone()).await;
+        let map = format!("{:#?}", storage.swapStateMap.read());
+        return (status, Some(map));
         //go through every uuid3 dir
         //get the state, save dirname and state to map to return to UI / caller
         //make an API call depending on the state
@@ -1669,6 +1848,12 @@ async fn handle_request(request: Request, storage: Storage) -> (bool, Option<Str
                 pipe.terminate().expect("err");
             }
         
+            let resp_J_filename = SwapTicketID.clone().to_string() + "/responder.json";
+            let mut resp_J: Value = serde_json::from_str(&fs::read_to_string(resp_J_filename.clone()).unwrap()).unwrap();
+            resp_J["MarketURL"] = json!(request.MarketURL.clone().unwrap().replace("\\", "").replace("\"", ""));
+            resp_J["MarketAPIKey"] = json!(request.MarketAPIKey.clone().unwrap().replace("\\", "").replace("\"", ""));
+            File::create(resp_J_filename).unwrap().write_all(resp_J.to_string().as_bytes());
+
 
             //TODO create a function loop that gets called as new swaps are successfully initialized
             //use the loop to keep track of the state and keep communication w server 
@@ -1677,7 +1862,7 @@ async fn handle_request(request: Request, storage: Storage) -> (bool, Option<Str
             //then submit it to the relevant market server and handle the resulting response
             //the loop can call claim or refund depening on what data it has
             //this should be able to handle both hot reloading and basic interaction UX
-            return (status, Some("New Swap Dir Created Successfully".to_string()));
+            return (status, Some(out.expect("out cant be formatted as string").to_string()));
         } else {
             println!("POST request failed: {}", response.status());
             return (status, Some("Failed to request Encrypted Initiation".to_string()));
@@ -1781,6 +1966,14 @@ impl Storage {
             loggedInAccountMap: Arc::new(RwLock::new(HashMap::new())),
             swapStateMap: Arc::new(RwLock::new(HashMap::new()))
         }
+    }
+
+    fn update_swap_state_map(&mut self, loaded_map: SingleNestMap) -> Result<(), Box<dyn std::error::Error>> {
+        // Replace the swapStateMap
+//        let mut swap_state_map = self.swapStateMap.write();
+//        *swap_state_map = loaded_map;
+        *self.swapStateMap.write() = loaded_map;
+        Ok(())
     }
 }
 
