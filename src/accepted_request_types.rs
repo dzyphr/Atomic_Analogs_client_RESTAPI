@@ -16,7 +16,7 @@ pub fn private_accepted_request_types() -> Vec<&'static str>
         "checkElGQGChannelCorrectness",
         "generateElGKeySpecificQG",
         "logInToPasswordEncryptedAccount",
-        "hotReloadAllSwapStates", 
+        "reloadAllSwapStates", 
         "startSwapFromUI"
     ]
 }

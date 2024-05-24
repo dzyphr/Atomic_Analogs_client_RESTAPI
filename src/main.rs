@@ -199,6 +199,12 @@ fn load_local_swap_state_map() -> SingleNestMap
     return map
 }
 
+fn update_local_swap_state_map(jsonmapdata: SingleNestMap)
+{
+    let swapStateMapString = serde_json::to_string_pretty(&jsonmapdata).unwrap();
+    fs::write("SwapStateMap", swapStateMapString).expect("Unable to write file");
+}
+
 fn check_swap_state_map_against_swap_dirs(mut map: SingleNestMap) -> SingleNestMap
 {
     let current_dir = Path::new(".");
@@ -270,15 +276,12 @@ fn check_swap_state_map_against_swap_dirs(mut map: SingleNestMap) -> SingleNestM
         }
     }
     return map
-    //TODO if swap found that was not on map for whatever reason load it? not sure when this would
-    //occur
-    //if nothing to update return true
-    //if something to update, do the update in here and return a false 
-    //to signal there was a discrepancy
 }
 
-async fn hot_reload(storage: Storage)
+async fn restore_state(mut storage: Storage)
 {
+    let mut loaded_swap_state_map = check_swap_state_map_against_swap_dirs(load_local_swap_state_map());
+    storage.update_swap_state_map(loaded_swap_state_map.clone());
     for swap in storage.swapStateMap.read().clone().keys()
     {
         let mut localChainAccountPassword = String::new();
@@ -338,7 +341,7 @@ async fn hot_reload(storage: Storage)
         }
         if properlyLoggedIn == true
         {
-            dbg!("hot reloading swap: ".to_string() +  &swap);
+            dbg!("reloading swap: ".to_string() +  &swap);
             let mut pipe = Popen::create(&[
                 "python3",  "-u", "main.py", "watchSwapLoop", &swap,
                 &localChainAccountPassword, &crossChainAccountPassword,
@@ -398,10 +401,11 @@ async fn main() {
     });
     let mut loaded_swap_state_map = check_swap_state_map_against_swap_dirs(load_local_swap_state_map());
     storage.update_swap_state_map(loaded_swap_state_map.clone());
-    hot_reload(storage.clone()).await;
+    update_local_swap_state_map(loaded_swap_state_map);
+    restore_state(storage.clone()).await;
     //need to load the local swap state map into storage as well as check it against existing swapfiles(maybe not mandatory)
     //after updating the map in storage and on disk(maybe not mandatory) other methods can safely utilize it
-    //we can at that point properly hot reload any swaps that are in an unfinished state
+    //we can at that point properly  reload any swaps that are in an unfinished state
     //add and update use the same function just differ in post and put
     let add_requests = warp::post()
         .and(warp::path(version))
@@ -468,7 +472,7 @@ async fn main() {
         .await;
 }
 
-async fn handle_request(request: Request, storage: Storage) -> (bool, Option<String>)
+async fn handle_request(request: Request, mut storage: Storage) -> (bool, Option<String>)
 {
     let mut output = "";
     let mut status = false;
@@ -504,7 +508,6 @@ async fn handle_request(request: Request, storage: Storage) -> (bool, Option<Str
             let output = &(output.to_owned() + "swapAmount` variable is required!");
             return (status, Some(output.to_string()));
         }
-
         let swapName = request.SwapTicketID.clone().unwrap();
         status = true;
         let responderCrossChainAccountName = accountNameFromChainAndIndex(&request.responderCrossChain.clone().unwrap(), 0, false);
@@ -614,15 +617,6 @@ async fn handle_request(request: Request, storage: Storage) -> (bool, Option<Str
                     {
                         eprintln!("Failed to capture stderr.");
                     }
-    /*
-                    let exit_status = child_process.wait().expect("Failed to wait for subprocess");
-                    if !exit_status.success() {
-                        eprintln!("Subprocess failed with exit code: {:?}", exit_status);
-                    }
-                    eprintln!("Subprocess failed with exit code: {:?}", exit_status);
-                    eprintln!("Subprocess error output:\n{}", error_output);
-
-                    */
                     let exit_status = child_process.wait().expect("Failed to wait for subprocess");
                     if exit_status.success() {
                         println!("Subprocess output:\n{}", output);
@@ -686,15 +680,6 @@ async fn handle_request(request: Request, storage: Storage) -> (bool, Option<Str
                     {
                         eprintln!("Failed to capture stderr.");
                     }
-    /*
-                    let exit_status = child_process.wait().expect("Failed to wait for subprocess");
-                    if !exit_status.success() {
-                        eprintln!("Subprocess failed with exit code: {:?}", exit_status);
-                    }
-                    eprintln!("Subprocess failed with exit code: {:?}", exit_status);
-                    eprintln!("Subprocess error output:\n{}", error_output);
-
-                    */
                     let exit_status = child_process.wait().expect("Failed to wait for subprocess");
                     if exit_status.success() {
                         println!("Subprocess output:\n{}", output);
@@ -726,21 +711,6 @@ async fn handle_request(request: Request, storage: Storage) -> (bool, Option<Str
             let output = &(output.to_owned() + "ENCInit variable is required!");
             return (status, Some(output.to_string()));
         }
-        /*
-        match fs::create_dir(request.SwapTicketID.clone().expect("error swapticketid to string").to_string()) {
-            Ok(_) => println!("Directory created successfully"),
-            Err(err) => eprintln!("Error: {}", err),
-        }
-        let file_path = request.SwapTicketID.clone().unwrap() + "/ENC_init.bin";
-        let mut file = match File::create(file_path) {
-            Ok(file) => file,
-            Err(_) => todo!()
-        };
-        let data = request.ENCInit.clone().unwrap();
-        match file.write_all(data.as_bytes()) {
-            Ok(_) => println!("Data written to file successfully"),
-            Err(err) => eprintln!("Error: {}", err),
-        }*/
         makeSwapDir(&request.SwapTicketID.clone().unwrap(), &request.ENCInit.clone().unwrap());
         return (status, Some("swap directory generated".to_string()))
     }
@@ -1422,227 +1392,15 @@ async fn handle_request(request: Request, storage: Storage) -> (bool, Option<Str
             return (status, Some(out.expect("not string").to_string().replace("\n", "")))
         }
     }
-    if request.request_type == "hotReloadAllSwapStates"
+    if request.request_type == "reloadAllSwapStates"
     {
         status = true;
-    /*    let possible_swap_states = vec![
-            "initiated", "uploadingResponseContract", "uploadedResponseContract", 
-            "fundingResponseContract", "fundedResponseContract", "responding", 
-            "responded", "finalized", "verifyingFinalizedContractValues", 
-            "verifiedFinalizedContractValues", "claiming", "refunding", 
-            "claimed", "refunded", "terminated", "tbd"
-        ];
-        let current_dir = Path::new(".");
-        let mut uuid_dirs = vec![];
-        let mut swapstatemap = HashMap::<String, String>::new();
-        if let Ok(subdirs) = fs::read_dir(current_dir)
-        {
-            for subdir in subdirs
-            {
-                if let Ok(subdir) = subdir
-                {
-                    let file_name = subdir.file_name().to_string_lossy().into_owned();
-                    if let Some(name) = Some(file_name.clone())
-                    {   
-                        if let Ok(uuid) = Uuid::parse_str(&name.clone())
-                        {
-                            dbg!(&name.clone());
-                            uuid_dirs.push(name.clone());
-                            /*if uuid.get_version() == Some(uuid::Version::Md5) //this check for
-                             * specific version doesnt currently work but is possible
-                            {
-                            }*/
-                        }
-                    }
-                }
-            }
-        };
-        if uuid_dirs.is_empty()
-        {
-            //if its still empty we have 0 swap folders to reload so return that as a message
-            return (status, Some("No Swap Folders Found".to_string()));
-        }
-        for dir in uuid_dirs
-        {
-            //TODO get local and cross chain account name from resp_J
-            //check if enc env files if so check if logged in before running
-            //call with passwords when available
-            //
-            let resp_J_path = dir.to_string() + "/responder.json";
-            if Path::new(&resp_J_path).exists() == true
-            {
-                let resp_J = fs::read_to_string(resp_J_path.clone()).expect("Failed to read file");
-                let v: Value = serde_json::from_str(&resp_J).expect("failed to parse JSON");
-                let InitiatorChain = &v["InitiatorChain"];
-                let ResponderChain = &v["ResponderChain"];
-                if InitiatorChain == "TestnetErgo" && ResponderChain == "Sepolia"
-                {
-                    let responderErgoAccountName = &v["responderErgoAccountName"];
-                    let responderSepoliaAccountName = &v["responderSepoliaAccountName"];
-                    let ErgoAccountName = responderErgoAccountName.to_string().replace(r#"\""#, "").replace(r#"""#, "");
-                    let ergchainFrameworkPath = "Ergo/SigmaParticle/";
-                    let ergencEnvPath = ergchainFrameworkPath.to_owned() + &ErgoAccountName.clone() + "/.env.encrypted";
-                    dbg!(&ergencEnvPath);
-                    let ergoencenvexists = if let Ok(_) = fs::metadata(ergencEnvPath.clone()) {
-                        true
-                    } else {
-                        false
-                    };
-                    let mut ErgoAccountPassword = String::new();
-                    let SepoliaAccountName = responderSepoliaAccountName.to_string().replace(r#"\""#, "").replace(r#"""#, "");
-                    let sepoliachainFrameworkPath = "EVM/Atomicity/";
-                    let sepoliaencEnvPath = sepoliachainFrameworkPath.to_owned() + &SepoliaAccountName.clone() + "/.env.encrypted";
-                    dbg!(&sepoliaencEnvPath);
-                    let sepoliaencenvexists = if let Ok(_) = fs::metadata(sepoliaencEnvPath.clone()) {
-                        true
-                    } else {
-                        false
-                    };
-                    let mut SepoliaAccountPassword = String::new();
-                    if ergoencenvexists && sepoliaencenvexists
-                    {
-                        if checkAccountLoggedInStatus(&ergencEnvPath, storage.clone()) == true
-                        {
-                            ErgoAccountPassword = storage.loggedInAccountMap.read()[&ergencEnvPath].clone();
-                        }
-                        else
-                        {
-                            let errstr =  "TestnetErgo ".to_owned() +  &ErgoAccountName + " is not logged in!";
-                            dbg!(&errstr);
-                            break
-    //                        return (false, Some(errstr.to_string()))
-                        }
-                        if checkAccountLoggedInStatus(&sepoliaencEnvPath, storage.clone()) == true
-                        {
-                            SepoliaAccountPassword = storage.loggedInAccountMap.read()[&sepoliaencEnvPath].clone();
-                        }
-                        else
-                        {
-                            let errstr =  "Sepolia ".to_owned() +  &SepoliaAccountName + " is not logged in!";
-                            dbg!(&errstr);
-                            break
-    //                        return (false, Some(errstr.to_string()))
-                        }
-                    }
-                    let SwapStatePath = dir.to_string() + "/SwapState";
-                    let SwapState = fs::read_to_string(SwapStatePath).expect("Failed to read file");
-                    swapstatemap.insert(dir.to_string(), SwapState.clone());
-                        
-                    let (out, updatedswapstatemap) = match possible_swap_states.iter().enumerate().find(|(_, &x)| x == SwapState) {
-                        Some((index, _)) => {
-                            match index {
-                                0..=5 => 
-                                    GeneralizeENC_ResponseSubroutine_hotreload(
-                                        dir.to_string(), SwapState.to_string(),
-                                        SepoliaAccountPassword.clone().to_string(), ErgoAccountPassword.clone().to_string(),
-                                        swapstatemap.clone()
-                                    ),
-                                6..=10 => 
-                                    GeneralizedENC_ResponderClaimSubroutine_hotreload(
-                                        dir.to_string(),
-                                        resp_J_path.to_string(), SwapState.to_string(),
-                                        swapstatemap.clone(),
-                                        SepoliaAccountPassword.clone().to_string(), ErgoAccountPassword.clone().to_string()
-                                    ),
-                                _ => {
-                                    // Handle other cases
-                                    ("unhandled swap state".to_string(), swapstatemap)
-                                }
-                            }
-                        },
-                        None => {
-                            // Handle case when SwapState is not found in possible_swap_states
-                            ("unknown swap state".to_string(), swapstatemap)
-                        }
-                    };
-                    swapstatemap = updatedswapstatemap;
-
-                    fn GeneralizeENC_ResponseSubroutine_hotreload(
-                        dir: String, SwapState: String, SepoliaAccountPassword: String, ErgoAccountPassword: String, mut swapstatemap: HashMap<String, String>
-                    ) -> (String, HashMap<String, String>)
-                    {
-                        let mut pipe = Popen::create(&[
-                            "python3",  "-u", "main.py", "GeneralizeENC_ResponseSubroutine_hotreload", &dir,
-                            &ErgoAccountPassword, &SepoliaAccountPassword, &SwapState
-                        ], PopenConfig{
-                            detached: true,
-                            stdout: Redirection::Pipe, 
-                            ..Default::default()
-                        }).expect("err");
-                        let (out, err) = pipe.communicate(None).expect("err");
-                        if let Some(exit_status) = pipe.poll()
-                        {
-                            println!("Out: {:?}, Err: {:?}", out, err)
-                        }
-                        else
-                        {
-                            pipe.terminate().expect("err");
-                        }
-                        (out.expect("out is none").to_string(), swapstatemap)
-                    }
-
-                    fn GeneralizedENC_ResponderClaimSubroutine_hotreload(
-                        dir: String, resp_J_path: String, SwapState: String, 
-                        mut swapstatemap: HashMap<String, String>,
-                        SepoliaAccountPassword: String , ErgoAccountPassword: String 
-                    ) -> (String, HashMap<String, String>)
-                    {
-                        let possible_swap_states = vec![
-                            "initiated", "uploadingResponseContract", "uploadedResponseContract",
-                            "fundingResponseContract", "fundedResponseContract", "responding",
-                            "responded", "finalized", "verifyingFinalizedContractValues",
-                            "verifiedFinalizedContractValues", "claiming", "refunding",
-                            "claimed", "refunded", "terminated", "tbd"
-                        ];
-                        if SwapState == possible_swap_states[6]
-                        {
-                            let finpathstr = dir.clone() + "/ENC_finalization.bin";
-                            let fin_path = Path::new(&finpathstr);
-                            if !fin_path.exists()
-                            {
-                                swapstatemap.insert(dir.to_string(), "responded_unsubmitted".to_string());
-                                return ("responded_unsubmitted".to_string(), swapstatemap)
-                            }
-                            else
-                            {
-                                dbg!("path exists: ", finpathstr);
-                            }
-                        }
-                        let mut pipe = Popen::create(&[
-                            "python3",  "-u", "main.py", "GeneralizedENC_ResponderClaimSubroutine_hotreload", &resp_J_path,
-                            &ErgoAccountPassword, &SepoliaAccountPassword, &SwapState
-                        ], PopenConfig{
-                            detached: true,
-                            stdout: Redirection::Pipe, 
-                            ..Default::default()
-                        }).expect("err");
-                        let (out, err) = pipe.communicate(None).expect("err");
-                        if let Some(exit_status) = pipe.poll()
-                        {
-                            println!("Out: {:?}, Err: {:?}", out, err)
-                        }
-                        else
-                        {
-                            pipe.terminate().expect("err");
-                        }
-                        return (out.expect("out is none").to_string(), swapstatemap)
-                    }
-
-                }
-            }
-        }*/
-        //after we reload the swaps the states in the map will change, we need to run an update of
-        //the map here to provide accurate data feedback to the UI
-//        let out = serde_json::to_string(&json!(swapstatemap)).unwrap();
-//
-        hot_reload(storage.clone()).await;
+        let mut loaded_swap_state_map = check_swap_state_map_against_swap_dirs(load_local_swap_state_map());
+        storage.update_swap_state_map(loaded_swap_state_map.clone());
+        update_local_swap_state_map(loaded_swap_state_map);
+        restore_state(storage.clone()).await;
         let map = format!("{:#?}", storage.swapStateMap.read());
         return (status, Some(map));
-        //go through every uuid3 dir
-        //get the state, save dirname and state to map to return to UI / caller
-        //make an API call depending on the state
-        //if a subsequent call is needed to finish the swap we need to determine whether
-        //to call it in this logic or let the UI / caller handle it
     }
     if request.request_type == "startSwapFromUI"
     {
@@ -1714,7 +1472,6 @@ async fn handle_request(request: Request, storage: Storage) -> (bool, Option<Str
 
         status = true;
         let mut swapDataMap: HashMap<String, String> = HashMap::new();
-         
         swapDataMap.insert("OrderTypeUUID".to_string(), request.OrderTypeUUID.clone().unwrap().replace("\\", "").replace("\"", ""));
         swapDataMap.insert("QGChannel".to_string(), request.QGChannel.clone().unwrap().replace("\\", "").replace("\"", ""));
         swapDataMap.insert("ElGamalKey".to_string(), request.ElGamalKey.clone().unwrap().replace("\\", "").replace("\"", ""));
@@ -1735,7 +1492,6 @@ async fn handle_request(request: Request, storage: Storage) -> (bool, Option<Str
             request.CrossChainAccount.clone().unwrap().replace("\\", "").replace("\"", "")
         );
         dbg!(&swapDataMap);
-
         let requestEncryptedInitiationData = json!({
             "id": Uuid::new_v4().to_string(),
             "request_type": "requestEncryptedInitiation",
@@ -1743,8 +1499,8 @@ async fn handle_request(request: Request, storage: Storage) -> (bool, Option<Str
             "QGChannel": swapDataMap["QGChannel"],
             "ElGamalKey": swapDataMap["ElGamalKey"]
         });
-
-        let server_public_requests_url = swapDataMap["MarketURL"].replace("ordertypes", "publicrequests").replace("\\", "").replace("\"", "");
+        let server_public_requests_url = 
+            swapDataMap["MarketURL"].replace("ordertypes", "publicrequests").replace("\\", "").replace("\"", "");
 //        dbg!(&server_public_requests_url);
         let bearer_token = request.MarketAPIKey.clone().unwrap().replace("\\", "").replace("\"", "");
         let response = reqwest::Client::new()
@@ -1760,19 +1516,12 @@ async fn handle_request(request: Request, storage: Storage) -> (bool, Option<Str
             let jr1 = jr.as_str().unwrap(); //can be stored and then parsed as valid json at this point
             let jrobj: Value = serde_json::from_str(&jr1).unwrap();
             let SwapTicketID = jrobj.get("SwapTicketID").expect("SwapTicketID not found").to_string().replace("\\", "").replace("\"", "");
-
-
             //ENC init not being written properly
             let ENCinit = jrobj.get("ENC_init.bin").expect("ENC_init.bin not found").to_string()
                 .replace("\"", "").replace("\\n", "\n");
 //            println!("{:#?}", ENCinit);
-
             
             makeSwapDir(&SwapTicketID.clone(), &ENCinit.clone()).await;
-
-
-
-
 
             //TODO implement proper false result in makeSwapDir use it to determine response here
             swapDataMap.insert("SwapState".to_string(), "initiated".to_string());
@@ -1828,7 +1577,6 @@ async fn handle_request(request: Request, storage: Storage) -> (bool, Option<Str
                         return (false, Some(errstr));
                     }
                 }
-
             }
             let mut pipe = Popen::create(&[
                 "python3",  "-u", "main.py", "watchSwapLoop", &SwapTicketID,
@@ -1847,21 +1595,11 @@ async fn handle_request(request: Request, storage: Storage) -> (bool, Option<Str
             {
                 pipe.terminate().expect("err");
             }
-        
             let resp_J_filename = SwapTicketID.clone().to_string() + "/responder.json";
             let mut resp_J: Value = serde_json::from_str(&fs::read_to_string(resp_J_filename.clone()).unwrap()).unwrap();
             resp_J["MarketURL"] = json!(request.MarketURL.clone().unwrap().replace("\\", "").replace("\"", ""));
             resp_J["MarketAPIKey"] = json!(request.MarketAPIKey.clone().unwrap().replace("\\", "").replace("\"", ""));
             File::create(resp_J_filename).unwrap().write_all(resp_J.to_string().as_bytes());
-
-
-            //TODO create a function loop that gets called as new swaps are successfully initialized
-            //use the loop to keep track of the state and keep communication w server 
-            //accordingly, can also use the loop potentially to handle hot reloading
-            //for example the loop should see that an initiation occured, create a response 
-            //then submit it to the relevant market server and handle the resulting response
-            //the loop can call claim or refund depening on what data it has
-            //this should be able to handle both hot reloading and basic interaction UX
             return (status, Some(out.expect("out cant be formatted as string").to_string()));
         } else {
             println!("POST request failed: {}", response.status());
