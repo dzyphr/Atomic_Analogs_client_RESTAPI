@@ -54,11 +54,75 @@ fn getAllEnabledChainsVec() -> Vec<&'static str>
     ];
 }
 
+fn getTestnetErgoAccounts() -> Vec<String>
+{
+    let testnetErgoFrameworkPathStr = "Ergo/SigmaParticle/";
+    let testnetErgoFrameworkPath = Path::new(testnetErgoFrameworkPathStr);
+    let expected_dirs = vec![
+            "AtomicMultiSig", "AtomicMultiSigECC", "basic_framework", "boxFilter", "boxValue",
+            "cpp", "getTreeFromBox", "treeToAddr", "boxConstantByIndex",
+            "boxToContract", "currentHeight", "currentHeight", "valFromHex", "testaccountname", "SwapKeyManager"
+    ];
+    let mut accounts = vec![];
+    if testnetErgoFrameworkPath.is_dir() {
+        for entry in fs::read_dir(testnetErgoFrameworkPath).expect("failed to read dir entry") {
+            let entry = entry.expect("error getting entry");
+            let path = entry.path();
+            if path.is_dir()
+            {
+                let path_str = path.to_str().unwrap_or("").to_string();
+                let pathref = &path.to_str();
+                if let Some(dir_name) = path.file_name().and_then(|name| name.to_str()) {
+                    if !expected_dirs.contains(&dir_name) {
+                        if Uuid::parse_str(&path_str).is_err() {
+                            let accountName = path_str.clone().replace(testnetErgoFrameworkPathStr, "");
+                            accounts.push(accountName.clone());
+                            dbg!(&accountName);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return accounts
+    //go through the framework dir
+    //find any outlier dir that isnt a uuid swap dir
+}
+
+fn getSepoliaAccounts() -> Vec<String>
+{
+    let Sepolia_framework_path_str = "EVM/Atomicity/";
+    let Sepolia_framework_path = Path::new(Sepolia_framework_path_str);
+    let expected_dirs = vec![
+        "AtomicMultiSigSecp256k1", "AtomicMultiSigSecp256k1_0.0.1", "basic_framework",
+        "cpp", "Goerli", "Sepolia", "solidity-flattener", "testaccountname"
+    ];
+    let mut accounts = vec![];
+    for entry in fs::read_dir(Sepolia_framework_path).expect("failed to read dir entry")
+    {
+        let entry = entry.expect("error getting entry");
+        let path = entry.path();
+        if path.is_dir()
+        {
+            let path_str = path.to_str().unwrap_or("").to_string();
+            let pathref = &path.to_str();
+            if let Some(dir_name) = path.file_name().and_then(|name| name.to_str()) {
+                if !expected_dirs.contains(&dir_name) {
+                    if !dir_name.starts_with("Swap_") {
+                        let accountName = path_str.clone().replace(Sepolia_framework_path_str, "");
+                        accounts.push(accountName.clone());
+                        dbg!(&accountName);
+                    }
+                }
+            }
+        }
+    }
+    return accounts
+}
+
 fn accountNameFromChainAndIndex(chain: &str, index: usize, getSize: bool) -> Result<String, String> {
     if chain == "TestnetErgo" {
-        let account_vec = vec![
-            "responderEnv"
-        ];
+        let account_vec = getTestnetErgoAccounts();
         if !getSize {
             if let Some(account) = account_vec.get(index) {
                 return Ok(account.to_string());
@@ -69,9 +133,7 @@ fn accountNameFromChainAndIndex(chain: &str, index: usize, getSize: bool) -> Res
             return Ok(account_vec.len().to_string());
         }
     } else if chain == "Sepolia" {
-        let account_vec = vec![
-            "basic_framework"
-        ];
+        let account_vec = getSepoliaAccounts();
         if !getSize {
             if let Some(account) = account_vec.get(index) {
                 return Ok(account.to_string());
@@ -191,12 +253,26 @@ fn checkAccountLoggedInStatus(encEnvPath: &str, storage: Storage) -> bool
     return s.contains_key(encEnvPath)
 }
 
-fn load_local_swap_state_map() -> SingleNestMap 
+fn load_local_swap_state_map() -> SingleNestMap
 {
     let filename = "SwapStateMap";
-    let contents = fs::read_to_string(filename).expect("cant read SwapStateMap");
-    let map: SingleNestMap = serde_json::from_str(&contents).expect("cant parse SwapStateMap into serde_json object");
-    return map
+    let filepath = Path::new(filename);
+    if filepath.is_file()
+    {
+        let contents = fs::read_to_string(filename).expect("cant read SwapStateMap");
+        let map: SingleNestMap = serde_json::from_str(&contents).expect("cant parse SwapStateMap into serde_json object");
+        return map
+    }
+    else
+    {
+        let mut file = File::create(filename.clone()).unwrap();
+        let data = "{}";
+        file.write_all(data.as_bytes()).unwrap() ;
+        let contents = fs::read_to_string(filename).expect("cant read SwapStateMap");
+        let map: SingleNestMap = serde_json::from_str(&contents).expect("cant parse SwapStateMap into serde_json object");
+        return map
+
+    }
 }
 
 fn update_local_swap_state_map(jsonmapdata: SingleNestMap)
@@ -399,6 +475,8 @@ async fn main() {
                 Err(warp::reject::custom(Noapikey))
             }
     });
+
+
     let mut loaded_swap_state_map = check_swap_state_map_against_swap_dirs(load_local_swap_state_map());
     storage.update_swap_state_map(loaded_swap_state_map.clone());
     update_local_swap_state_map(loaded_swap_state_map);
