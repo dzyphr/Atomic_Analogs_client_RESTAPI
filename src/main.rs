@@ -45,13 +45,26 @@ mod swap_fns;
 use swap_fns::{makeSwapDir};
 mod str_tools;
 use str_tools::{rem_first_and_last};
-
+use regex::Regex;
 fn getAllEnabledChainsVec() -> Vec<&'static str>
 {
     return vec![
         "TestnetErgo",
         "Sepolia"
     ];
+}
+
+fn check_if_uuid_fmt(input: &str) -> bool
+{
+    let regex = Regex::new(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$").unwrap();
+    if regex.is_match(input) == true
+    {
+        return true //is formatted like uuid
+    }
+    else 
+    {
+        return false //is not formatted like uuid
+    }
 }
 
 fn getTestnetErgoAccounts() -> Vec<String>
@@ -75,9 +88,11 @@ fn getTestnetErgoAccounts() -> Vec<String>
                 if let Some(dir_name) = path.file_name().and_then(|name| name.to_str()) {
                     if !expected_dirs.contains(&dir_name) {
                         if Uuid::parse_str(&path_str).is_err() {
-                            let accountName = path_str.clone().replace(testnetErgoFrameworkPathStr, "");
-                            accounts.push(accountName.clone());
-                            dbg!(&accountName);
+                            if check_if_uuid_fmt(&path_str) == false {
+                                let accountName = path_str.clone().replace(testnetErgoFrameworkPathStr, "");
+                                accounts.push(accountName.clone());
+                                //dbg!(&accountName);
+                            }
                         }
                     }
                 }
