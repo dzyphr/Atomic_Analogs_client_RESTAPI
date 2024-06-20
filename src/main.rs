@@ -379,12 +379,14 @@ async fn restore_state(mut storage: Storage)
         let mut crossChainAccountPassword = String::new();
         let swapDataMap = storage.swapStateMap.read()[&swap.clone()].clone();
         let mut properlyLoggedIn = false;
+        let mut ergoencenvexists = false;
+        let mut sepoliaencenvexists = false;
         if swapDataMap["LocalChain"] == "Sepolia" && swapDataMap["CrossChain"] == "TestnetErgo"
         {
             let ErgoAccountName = &swapDataMap["CrossChainAccount"];
             let ergchainFrameworkPath = "Ergo/SigmaParticle/";
             let ergencEnvPath = ergchainFrameworkPath.to_owned() + &ErgoAccountName.clone() + "/.env.encrypted";
-            let ergoencenvexists = if let Ok(_) = fs::metadata(ergencEnvPath.clone()) {
+            ergoencenvexists = if let Ok(_) = fs::metadata(ergencEnvPath.clone()) {
                 true
             } else {
                 false
@@ -393,7 +395,7 @@ async fn restore_state(mut storage: Storage)
             let SepoliaAccountName =  &swapDataMap["LocalChainAccount"];
             let sepoliachainFrameworkPath = "EVM/Atomicity/";
             let sepoliaencEnvPath = sepoliachainFrameworkPath.to_owned() + &SepoliaAccountName.clone() + "/.env.encrypted";
-            let sepoliaencenvexists = if let Ok(_) = fs::metadata(sepoliaencEnvPath.clone()) {
+            sepoliaencenvexists = if let Ok(_) = fs::metadata(sepoliaencEnvPath.clone()) {
                 true
             } else {
                 false
@@ -424,6 +426,38 @@ async fn restore_state(mut storage: Storage)
                     properlyLoggedIn = true;
                 }
             }
+            if ergoencenvexists && !sepoliaencenvexists
+            {
+                if checkAccountLoggedInStatus(&ergencEnvPath, storage.clone()) == true
+                {
+                    crossChainAccountPassword = storage.loggedInAccountMap.read()[&ergencEnvPath].clone();
+                }
+                else
+                {
+                    let errstr =  "TestnetErgo ".to_owned() +  &ErgoAccountName + " is not logged in!";
+                    dbg!(&errstr);
+                }
+                if checkAccountLoggedInStatus(&ergencEnvPath, storage.clone()) == true
+                {
+                    properlyLoggedIn = true;
+                }
+            }
+            if !ergoencenvexists && sepoliaencenvexists
+            {
+                if checkAccountLoggedInStatus(&sepoliaencEnvPath, storage.clone()) == true
+                {
+                    localChainAccountPassword = storage.loggedInAccountMap.read()[&sepoliaencEnvPath].clone();
+                }
+                else
+                {
+                    let errstr =  "Sepolia ".to_owned() +  &SepoliaAccountName + " is not logged in!";
+                    dbg!(&errstr);
+                }
+                if checkAccountLoggedInStatus(&ergencEnvPath, storage.clone()) == true
+                {
+                    properlyLoggedIn = true;
+                }
+            }
             else
             {
                 //TODO handle cases where one acc is encrypted and another is not
@@ -432,23 +466,69 @@ async fn restore_state(mut storage: Storage)
         }
         if properlyLoggedIn == true
         {
-            dbg!("reloading swap: ".to_string() +  &swap);
-            let mut pipe = Popen::create(&[
-                "python3",  "-u", "main.py", "watchSwapLoop", &swap,
-                &localChainAccountPassword, &crossChainAccountPassword,
-            ], PopenConfig{
-                detached: true,
-                stdout: Redirection::Pipe,
-                ..Default::default()
-            }).expect("err");
-            let (out, err) = pipe.communicate(None).expect("err");
-            if let Some(exit_status) = pipe.poll()
+            if ergoencenvexists && sepoliaencenvexists || !ergoencenvexists && !sepoliaencenvexists
             {
-                println!("Out: {:?}, Err: {:?}", out, err)
+                dbg!("reloading swap: ".to_string() +  &swap);
+                let mut pipe = Popen::create(&[
+                    "python3",  "-u", "main.py", "watchSwapLoop", &swap,
+                    &localChainAccountPassword, &crossChainAccountPassword,
+                ], PopenConfig{
+                    detached: true,
+                    stdout: Redirection::Pipe,
+                    ..Default::default()
+                }).expect("err");
+                let (out, err) = pipe.communicate(None).expect("err");
+                if let Some(exit_status) = pipe.poll()
+                {
+                    println!("Out: {:?}, Err: {:?}", out, err)
+                }
+                else
+                {
+                    pipe.terminate().expect("err");
+                }
+
             }
-            else
+            else if !ergoencenvexists && sepoliaencenvexists
             {
-                pipe.terminate().expect("err");
+                dbg!("reloading swap: ".to_string() +  &swap);
+                let mut pipe = Popen::create(&[
+                    "python3",  "-u", "main.py", "watchSwapLoop_localEncOnly", &swap,
+                    &localChainAccountPassword 
+                ], PopenConfig{
+                    detached: true,
+                    stdout: Redirection::Pipe,
+                    ..Default::default()
+                }).expect("err");
+                let (out, err) = pipe.communicate(None).expect("err");
+                if let Some(exit_status) = pipe.poll()
+                {
+                    println!("Out: {:?}, Err: {:?}", out, err)
+                }
+                else
+                {
+                    pipe.terminate().expect("err");
+                }
+            }
+            else if ergoencenvexists && !sepoliaencenvexists
+            {
+                dbg!("reloading swap: ".to_string() +  &swap);
+                let mut pipe = Popen::create(&[
+                    "python3",  "-u", "main.py", "watchSwapLoop_crossEncOnly", &swap,
+                    &crossChainAccountPassword  
+                ], PopenConfig{
+                    detached: true,
+                    stdout: Redirection::Pipe,
+                    ..Default::default()
+                }).expect("err");
+                let (out, err) = pipe.communicate(None).expect("err");
+                if let Some(exit_status) = pipe.poll()
+                {
+                    println!("Out: {:?}, Err: {:?}", out, err)
+                }
+                else
+                {
+                    pipe.terminate().expect("err");
+                }
             }
         }
     }
@@ -1647,7 +1727,7 @@ async fn handle_request(request: Request, mut storage: Storage) -> (bool, Option
                     false
                 };
                 let mut SepoliaAccountPassword = String::new();
-                if ergoencenvexists && sepoliaencenvexists
+                if ergoencenvexists && sepoliaencenvexists 
                 {
                     if checkAccountLoggedInStatus(&ergencEnvPath, storage.clone()) == true
                     {
@@ -1669,32 +1749,136 @@ async fn handle_request(request: Request, mut storage: Storage) -> (bool, Option
                         dbg!(&errstr);
                         return (false, Some(errstr));
                     }
+
+                    let mut pipe = Popen::create(&[
+                        "python3",  "-u", "main.py", "watchSwapLoop", &SwapTicketID,
+                        &localChainAccountPassword, &crossChainAccountPassword,
+                    ], PopenConfig{
+                        detached: true,
+                        stdout: Redirection::Pipe,
+                        ..Default::default()
+                    }).expect("err");
+                    let (out, err) = pipe.communicate(None).expect("err");
+                    if let Some(exit_status) = pipe.poll()
+                    {
+                        println!("Out: {:?}, Err: {:?}", out, err)
+                    }
+                    else
+                    {
+                        pipe.terminate().expect("err");
+                    }
+                    let resp_J_filename = SwapTicketID.clone().to_string() + "/responder.json";
+                    let mut resp_J: Value = serde_json::from_str(&fs::read_to_string(resp_J_filename.clone()).unwrap()).unwrap();
+                    resp_J["MarketURL"] = json!(request.MarketURL.clone().unwrap().replace("\\", "").replace("\"", ""));
+                    resp_J["MarketAPIKey"] = json!(request.MarketAPIKey.clone().unwrap().replace("\\", "").replace("\"", ""));
+                    File::create(resp_J_filename).unwrap().write_all(resp_J.to_string().as_bytes());
+                    return (status, Some(out.expect("out cant be formatted as string").to_string()));
+                }
+                else if !ergoencenvexists && !sepoliaencenvexists
+                {
+                    let mut pipe = Popen::create(&[
+                        "python3",  "-u", "main.py", "watchSwapLoop", &SwapTicketID,
+                        &localChainAccountPassword, &crossChainAccountPassword,
+                    ], PopenConfig{
+                        detached: true,
+                        stdout: Redirection::Pipe,
+                        ..Default::default()
+                    }).expect("err");
+                    let (out, err) = pipe.communicate(None).expect("err");
+                    if let Some(exit_status) = pipe.poll()
+                    {
+                        println!("Out: {:?}, Err: {:?}", out, err)
+                    }
+                    else
+                    {
+                        pipe.terminate().expect("err");
+                    }
+                    let resp_J_filename = SwapTicketID.clone().to_string() + "/responder.json";
+                    let mut resp_J: Value = serde_json::from_str(&fs::read_to_string(resp_J_filename.clone()).unwrap()).unwrap();
+                    resp_J["MarketURL"] = json!(request.MarketURL.clone().unwrap().replace("\\", "").replace("\"", ""));
+                    resp_J["MarketAPIKey"] = json!(request.MarketAPIKey.clone().unwrap().replace("\\", "").replace("\"", ""));
+                    File::create(resp_J_filename).unwrap().write_all(resp_J.to_string().as_bytes());
+                    return (status, Some(out.expect("out cant be formatted as string").to_string()));
+                }
+                if ergoencenvexists && !sepoliaencenvexists
+                {
+                    if checkAccountLoggedInStatus(&ergencEnvPath, storage.clone()) == true
+                    {
+                        crossChainAccountPassword = storage.loggedInAccountMap.read()[&ergencEnvPath].clone();
+                    }
+                    else
+                    {
+                        let errstr =  "TestnetErgo ".to_owned() +  &ErgoAccountName + " is not logged in!";
+                        dbg!(&errstr);
+                        return (false, Some(errstr));
+                    }
+
+                    let mut pipe = Popen::create(&[
+                        "python3",  "-u", "main.py", "watchSwapLoop_crossEncOnly", &SwapTicketID,
+                        &crossChainAccountPassword,
+                    ], PopenConfig{
+                        detached: true,
+                        stdout: Redirection::Pipe,
+                        ..Default::default()
+                    }).expect("err");
+                    let (out, err) = pipe.communicate(None).expect("err");
+                    if let Some(exit_status) = pipe.poll()
+                    {
+                        println!("Out: {:?}, Err: {:?}", out, err)
+                    }
+                    else
+                    {
+                        pipe.terminate().expect("err");
+                    }
+                    let resp_J_filename = SwapTicketID.clone().to_string() + "/responder.json";
+                    let mut resp_J: Value = serde_json::from_str(&fs::read_to_string(resp_J_filename.clone()).unwrap()).unwrap();
+                    resp_J["MarketURL"] = json!(request.MarketURL.clone().unwrap().replace("\\", "").replace("\"", ""));
+                    resp_J["MarketAPIKey"] = json!(request.MarketAPIKey.clone().unwrap().replace("\\", "").replace("\"", ""));
+                    File::create(resp_J_filename).unwrap().write_all(resp_J.to_string().as_bytes());
+                    return (status, Some(out.expect("out cant be formatted as string").to_string()));
+                }
+                if !ergoencenvexists && sepoliaencenvexists
+                {
+                    if checkAccountLoggedInStatus(&sepoliaencEnvPath, storage.clone()) == true
+                    {
+                        localChainAccountPassword = storage.loggedInAccountMap.read()[&sepoliaencEnvPath].clone();
+                    }
+                    else
+                    {
+                        let errstr =  "Sepolia ".to_owned() +  &SepoliaAccountName + " is not logged in!";
+                        dbg!(&errstr);
+                        return (false, Some(errstr));
+                    }
+
+                    let mut pipe = Popen::create(&[
+                        "python3",  "-u", "main.py", "watchSwapLoop_localEncOnly", &SwapTicketID,
+                        &localChainAccountPassword, &crossChainAccountPassword,
+                    ], PopenConfig{
+                        detached: true,
+                        stdout: Redirection::Pipe,
+                        ..Default::default()
+                    }).expect("err");
+                    let (out, err) = pipe.communicate(None).expect("err");
+                    if let Some(exit_status) = pipe.poll()
+                    {
+                        println!("Out: {:?}, Err: {:?}", out, err)
+                    }
+                    else
+                    {
+                        pipe.terminate().expect("err");
+                    }
+                    let resp_J_filename = SwapTicketID.clone().to_string() + "/responder.json";
+                    let mut resp_J: Value = serde_json::from_str(&fs::read_to_string(resp_J_filename.clone()).unwrap()).unwrap();
+                    resp_J["MarketURL"] = json!(request.MarketURL.clone().unwrap().replace("\\", "").replace("\"", ""));
+                    resp_J["MarketAPIKey"] = json!(request.MarketAPIKey.clone().unwrap().replace("\\", "").replace("\"", ""));
+                    File::create(resp_J_filename).unwrap().write_all(resp_J.to_string().as_bytes());
+                    return (status, Some(out.expect("out cant be formatted as string").to_string()));
                 }
             }
-            let mut pipe = Popen::create(&[
-                "python3",  "-u", "main.py", "watchSwapLoop", &SwapTicketID,
-                &localChainAccountPassword, &crossChainAccountPassword,
-            ], PopenConfig{
-                detached: true,
-                stdout: Redirection::Pipe,
-                ..Default::default()
-            }).expect("err");
-            let (out, err) = pipe.communicate(None).expect("err");
-            if let Some(exit_status) = pipe.poll()
-            {
-                println!("Out: {:?}, Err: {:?}", out, err)
-            }
-            else
-            {
-                pipe.terminate().expect("err");
-            }
-            let resp_J_filename = SwapTicketID.clone().to_string() + "/responder.json";
-            let mut resp_J: Value = serde_json::from_str(&fs::read_to_string(resp_J_filename.clone()).unwrap()).unwrap();
-            resp_J["MarketURL"] = json!(request.MarketURL.clone().unwrap().replace("\\", "").replace("\"", ""));
-            resp_J["MarketAPIKey"] = json!(request.MarketAPIKey.clone().unwrap().replace("\\", "").replace("\"", ""));
-            File::create(resp_J_filename).unwrap().write_all(resp_J.to_string().as_bytes());
-            return (status, Some(out.expect("out cant be formatted as string").to_string()));
-        } else {
+            return  (status, Some("Unknown Error".to_string()));
+        } 
+        else 
+        {
             println!("POST request failed: {}", response.status());
             return (status, Some("Failed to request Encrypted Initiation".to_string()));
         }
