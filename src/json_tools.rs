@@ -1,4 +1,4 @@
-use crate::{Read, json, File, Path};
+use crate::{Read, json, File, Path, HashMap, SingleNestMap};
 pub async fn readJSONfromfilepath(filepath: &str) -> Result<impl warp::Reply, warp::Rejection>
 {
     if Path::new(filepath).exists()
@@ -17,4 +17,9 @@ pub async fn readJSONfromfilepath(filepath: &str) -> Result<impl warp::Reply, wa
 pub async fn readJSONfromString(JSONString: String) -> Result<impl warp::Reply, warp::Rejection>
 {
     Ok(warp::reply::json(&json!(JSONString)))
+}
+
+pub async fn readJSONfromSingleNestMap(map: SingleNestMap) -> Result<impl warp::Reply, warp::Rejection>
+{
+    Ok(warp::reply::json(&json!(map)))
 }

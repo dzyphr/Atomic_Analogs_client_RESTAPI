@@ -19,3 +19,11 @@ num-traits = "0.2.15"
 ramp = "0.7.0"
 reqwest = {version = "0.12.4", features = ["json"]}
 regex = "1.10.5"
+futures = "0.3.30"
+crossbeam-utils = "0.8.20"
+signal-hook = "0.3.17"
+nix = { version = "0.29", features = ["process", "signal"] }
+pyo3 = { version = "0.22.2"}
+#pyo3 = { version = "0.22.2", features = ["auto-initialize"]  }
+
+

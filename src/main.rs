@@ -2,12 +2,17 @@
 #![allow(unused_parens)]
 extern crate serde_json;
 use std::path::Path;
+use futures::{Future, future};
 use warp::cors;
 use std::fs;
 use uuid::{uuid, Uuid};
 use std::fs::OpenOptions;
 use serde_json::{json, Value, Map};
 use warp::{http, Filter};
+use pyo3::types::PyDict;
+use pyo3::types::PyList;
+use pyo3::prelude::*;
+use pyo3::types::PyTuple;
 use std::io::BufReader;
 use std::fs::File;
 use std::io::prelude::*;
@@ -15,13 +20,13 @@ use warp::reply::Html;
 use warp::Reply;
 use parking_lot::RwLock;
 use std::collections::HashMap;
-use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use subprocess::{PopenConfig, Popen, Redirection};
-use std::process::{Command, Stdio};
-use std::thread;
+use std::process::{Command, Stdio, exit};
 use num_bigint::BigInt;
 mod math;
+use std::sync::{Arc, Mutex};
+use std::thread;
 use math::{big_is_prime};
 use std::collections::BTreeMap;
 use serde_json::from_str;
@@ -34,9 +39,13 @@ use API_keys::{accepted_private_api_keys, accepted_public_api_keys};
 mod accepted_request_types;
 use accepted_request_types::{private_accepted_request_types, public_accepted_request_types};
 mod get_fns;
-use get_fns::{private_get_request_map, get_QGPubkeyArray, get_ElGamalQGChannels, get_ElGamalPubs}; 
+use get_fns::{
+    private_get_request_map, get_QGPubkeyArray, 
+    get_ElGamalQGChannels, get_ElGamalPubs, get_SwapStateMapJSON,
+    get_responderJSONbySwapID
+}; 
 mod json_tools;
-use json_tools::{readJSONfromfilepath, readJSONfromString};
+use json_tools::{readJSONfromfilepath, readJSONfromString, readJSONfromSingleNestMap};
 mod delete_fns;
 use delete_fns::{private_delete_request};
 mod update_fns;
@@ -46,6 +55,15 @@ use swap_fns::{makeSwapDir};
 mod str_tools;
 use str_tools::{rem_first_and_last};
 use regex::Regex;
+use crossbeam_utils;
+use std::sync::atomic::{AtomicBool, Ordering};
+use signal_hook::consts::signal::{SIGTERM, SIGINT, SIGKILL};
+use nix::unistd::{Pid, setpgid};
+use nix::errno::Errno;
+use nix::sys::signal::{kill, Signal};
+use signal_hook::iterator::Signals;
+use std::os::unix::process::CommandExt;
+use nix::libc;
 fn getAllEnabledChainsVec() -> Vec<&'static str>
 {
     return vec![
@@ -56,7 +74,7 @@ fn getAllEnabledChainsVec() -> Vec<&'static str>
 
 fn check_if_uuid_fmt(input: &str) -> bool
 {
-    let regex = Regex::new(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$").unwrap();
+    let regex = Regex::new(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}").unwrap();
     if regex.is_match(input) == true
     {
         return true //is formatted like uuid
@@ -268,6 +286,7 @@ fn checkAccountLoggedInStatus(encEnvPath: &str, storage: Storage) -> bool
     return s.contains_key(encEnvPath)
 }
 
+
 fn load_local_swap_state_map() -> SingleNestMap
 {
     let filename = "SwapStateMap";
@@ -312,7 +331,7 @@ fn check_swap_state_map_against_swap_dirs(mut map: SingleNestMap) -> SingleNestM
                 {
                     if let Ok(uuid) = Uuid::parse_str(&name.clone())
                     {
-                        dbg!(&name.clone());
+                        //dbg!(&name.clone());
                         uuid_dirs.push(name.clone());
                         /*if uuid.get_version() == Some(uuid::Version::Md5) //this check for
                          * specific version doesnt currently work but is possible
@@ -332,6 +351,7 @@ fn check_swap_state_map_against_swap_dirs(mut map: SingleNestMap) -> SingleNestM
     }
     for dir in &uuid_dirs
     {
+        //dbg!(&dir.to_string());
         if !map.contains_key(&dir.to_string())
         {
             let mut swapDataMap = StringStringMap::new();
@@ -340,7 +360,7 @@ fn check_swap_state_map_against_swap_dirs(mut map: SingleNestMap) -> SingleNestM
             let resp_J_filename = dir.clone().to_string() + "/responder.json";
             let resp_J: Value = serde_json::from_str(&fs::read_to_string(resp_J_filename).unwrap()).unwrap();
             let ElGamalKeyPath = resp_J.get("ElGamalKeyPath").unwrap().to_string().replace("\\", "").replace("\"", "");
-            dbg!(&ElGamalKeyPath);
+            //dbg!(&ElGamalKeyPath);
             let ElGObj: Value = serde_json::from_str(&fs::read_to_string(ElGamalKeyPath).unwrap()).unwrap();
             let QGChannel = ElGObj.get("q").unwrap().to_string().replace("\\", "").replace("\"", "") + "," + &ElGObj.get("g").unwrap().to_string().replace("\\", "").replace("\"", "");
             swapDataMap.insert("QGChannel".to_string(), QGChannel);
@@ -469,12 +489,12 @@ async fn restore_state(mut storage: Storage)
             if ergoencenvexists && sepoliaencenvexists || !ergoencenvexists && !sepoliaencenvexists
             {
                 dbg!("reloading swap: ".to_string() +  &swap);
-                let mut pipe = Popen::create(&[
+                /*let mut pipe = Popen::create(&[
                     "python3",  "-u", "main.py", "watchSwapLoop", &swap,
                     &localChainAccountPassword, &crossChainAccountPassword,
                 ], PopenConfig{
                     detached: true,
-                    stdout: Redirection::Pipe,
+                    //stdout: Redirection::Pipe,
                     ..Default::default()
                 }).expect("err");
                 let (out, err) = pipe.communicate(None).expect("err");
@@ -485,18 +505,28 @@ async fn restore_state(mut storage: Storage)
                 else
                 {
                     pipe.terminate().expect("err");
-                }
-
+                }*/
+                let child = match Command::new("python3")
+                    .arg("-u")
+                    .arg("main.py")
+                    .arg("watchSwapLoop")
+                    .arg(swap)
+                    .arg(localChainAccountPassword)
+                    .arg(crossChainAccountPassword)
+                    .spawn() {
+                        Ok(child) => child,
+                        Err(error) => panic!( "Failed to execute command {error}", error=error)
+                    };
             }
             else if !ergoencenvexists && sepoliaencenvexists
             {
                 dbg!("reloading swap: ".to_string() +  &swap);
-                let mut pipe = Popen::create(&[
+/*                let mut pipe = Popen::create(&[
                     "python3",  "-u", "main.py", "watchSwapLoop_localEncOnly", &swap,
                     &localChainAccountPassword 
                 ], PopenConfig{
                     detached: true,
-                    stdout: Redirection::Pipe,
+                    //stdout: Redirection::Pipe,
                     ..Default::default()
                 }).expect("err");
                 let (out, err) = pipe.communicate(None).expect("err");
@@ -507,17 +537,27 @@ async fn restore_state(mut storage: Storage)
                 else
                 {
                     pipe.terminate().expect("err");
-                }
+                }*/
+                let child = match Command::new("python3")
+                    .arg("-u")
+                    .arg("main.py")
+                    .arg("watchSwapLoop_localEncOnly")
+                    .arg(swap)
+                    .arg(localChainAccountPassword)
+                    .spawn() {
+                        Ok(child) => child,
+                        Err(error) => panic!( "Failed to execute command {error}", error=error)
+                    };
             }
             else if ergoencenvexists && !sepoliaencenvexists
             {
                 dbg!("reloading swap: ".to_string() +  &swap);
-                let mut pipe = Popen::create(&[
+                /*let mut pipe = Popen::create(&[
                     "python3",  "-u", "main.py", "watchSwapLoop_crossEncOnly", &swap,
                     &crossChainAccountPassword  
                 ], PopenConfig{
                     detached: true,
-                    stdout: Redirection::Pipe,
+                    //stdout: Redirection::Pipe,
                     ..Default::default()
                 }).expect("err");
                 let (out, err) = pipe.communicate(None).expect("err");
@@ -528,7 +568,17 @@ async fn restore_state(mut storage: Storage)
                 else
                 {
                     pipe.terminate().expect("err");
-                }
+                }*/
+                let child = match Command::new("python3")
+                    .arg("-u")
+                    .arg("main.py")
+                    .arg("watchSwapLoop_crossEncOnly")
+                    .arg(swap)
+                    .arg(crossChainAccountPassword)
+                    .spawn() {
+                        Ok(child) => child,
+                        Err(error) => panic!( "Failed to execute command {error}", error=error)
+                    };
             }
         }
     }
@@ -544,6 +594,7 @@ async fn main() {
     let ElGamalQChannelsPath = "ElGamalQGChannels";
     let QGPubkeyArrayPath = "QGPubkeyArray";
     let AllChainAccountsMapPath = "AllChainAccountsMap";
+    let SwapStateMapPath = "SwapStateMap";
     let cors = cors()
         .allow_any_origin()
         .allow_methods(vec!["GET", "POST"])
@@ -637,12 +688,30 @@ async fn main() {
         .and(warp::path::end())
         .and_then(get_allChainAccountsMapJSON)
         .with(cors.clone());        
+    let get_SwapStateMap = warp::get()
+        .and(warp::path(version))
+        .and(warp::path(SwapStateMapPath))
+        .and(warp::path::end())
+        .and_then(get_SwapStateMapJSON)
+        .with(cors.clone());
     let routes = 
         add_requests.or(get_requests).or(update_request).or(private_delete_request)
-        .or(get_ElGamalPubs).or(get_ElGamalQGChannels).or(get_QGPubkeyArray).or(get_AllChainAccountsMap);
+        .or(get_ElGamalPubs).or(get_ElGamalQGChannels).or(get_QGPubkeyArray).or(get_AllChainAccountsMap).or(get_SwapStateMap);
     warp::serve(routes)
         .run(([127, 0, 0, 1], 3031))
         .await;
+}
+
+async fn input_responder_data(path: String, market_url: String, market_api_key: String) 
+{
+    let ready_future = future::ready(fs::File::open(path.clone()).unwrap());
+    let mut file = ready_future.await;
+    let mut buffer = String::new(); // filecontents
+    file.read_to_string(&mut buffer).unwrap();
+    let mut resp_J: Value = serde_json::from_str(&buffer).unwrap();
+    resp_J["MarketURL"] = market_url.into();
+    resp_J["MarketAPIKey"] = market_api_key.into();
+    File::create(path).unwrap().write_all(resp_J.to_string().as_bytes());
 }
 
 async fn handle_request(request: Request, mut storage: Storage) -> (bool, Option<String>)
@@ -689,13 +758,13 @@ async fn handle_request(request: Request, mut storage: Storage) -> (bool, Option
         let mut crossChainAccountPassword = String::new();
         let mut InitiatorChain = request.responderCrossChain.clone().unwrap();
         let mut ResponderChain = request.responderLocalChain.clone().unwrap();
-        dbg!(&InitiatorChain);
-        dbg!(&ResponderChain);
+        //dbg!(&InitiatorChain);
+        //dbg!(&ResponderChain);
         if InitiatorChain == "TestnetErgo"
         {
             let chainFrameworkPath = "Ergo/SigmaParticle/";
             let encEnvPath = chainFrameworkPath.to_owned() + &responderCrossChainAccountName.clone().unwrap() + "/.env.encrypted";
-            dbg!(&encEnvPath);
+            //dbg!(&encEnvPath);
             let exists = if let Ok(_) = fs::metadata(encEnvPath.clone()) {
                 true
             } else {
@@ -719,7 +788,7 @@ async fn handle_request(request: Request, mut storage: Storage) -> (bool, Option
         {
             let chainFrameworkPath = "EVM/Atomicity/";
             let encEnvPath = chainFrameworkPath.to_owned() + &responderLocalChainAccountName.clone().unwrap() + "/.env.encrypted";
-            dbg!(&encEnvPath);
+            //dbg!(&encEnvPath);
             let exists = if let Ok(_) = fs::metadata(encEnvPath.clone()) {
                 true
             } else {
@@ -862,7 +931,7 @@ async fn handle_request(request: Request, mut storage: Storage) -> (bool, Option
                     }
             });
         }
-        dbg!(request.SwapTicketID.clone().unwrap() + "/ENC_response_path.bin");
+        //dbg!(request.SwapTicketID.clone().unwrap() + "/ENC_response_path.bin");
         let file_path = request.SwapTicketID.clone().unwrap() + "/ENC_response_path.bin";
 
         let file_contents = fs::read_to_string(file_path).expect("error reading file");
@@ -884,7 +953,7 @@ async fn handle_request(request: Request, mut storage: Storage) -> (bool, Option
             let output = &(output.to_owned() + "ENCInit variable is required!");
             return (status, Some(output.to_string()));
         }
-        makeSwapDir(&request.SwapTicketID.clone().unwrap(), &request.ENCInit.clone().unwrap());
+        makeSwapDir(&request.SwapTicketID.clone().unwrap(), &request.ENCInit.clone().unwrap()).await;
         return (status, Some("swap directory generated".to_string()))
     }
     if request.request_type == "writeSwapFile"
@@ -951,13 +1020,13 @@ async fn handle_request(request: Request, mut storage: Storage) -> (bool, Option
             let mut crossChainAccountPassword = String::new();
             let responderCrossChainAccountName = accountNameFromChainAndIndex(&InitiatorChain.clone(), 0, false);
             let responderLocalChainAccountName = accountNameFromChainAndIndex(&ResponderChain.clone(), 0, false);
-            dbg!(&InitiatorChain);
-            dbg!(&ResponderChain);
+            //dbg!(&InitiatorChain);
+            //dbg!(&ResponderChain);
             if InitiatorChain == "TestnetErgo"
             {
                 let chainFrameworkPath = "Ergo/SigmaParticle/";
                 let encEnvPath = chainFrameworkPath.to_owned() + &responderCrossChainAccountName.clone().unwrap() + "/.env.encrypted";
-                dbg!(&encEnvPath);
+                //dbg!(&encEnvPath);
                 let exists = if let Ok(_) = fs::metadata(encEnvPath.clone()) {
                     true
                 } else {
@@ -981,7 +1050,7 @@ async fn handle_request(request: Request, mut storage: Storage) -> (bool, Option
             {
                 let chainFrameworkPath = "EVM/Atomicity/";
                 let encEnvPath = chainFrameworkPath.to_owned() + &responderLocalChainAccountName.clone().unwrap() + "/.env.encrypted";
-                dbg!(&encEnvPath);
+                //dbg!(&encEnvPath);
                 let exists = if let Ok(_) = fs::metadata(encEnvPath.clone()) {
                     true
                 } else {
@@ -1079,7 +1148,7 @@ async fn handle_request(request: Request, mut storage: Storage) -> (bool, Option
             let ErgoAccountName = accountNameFromChainAndIndex("TestnetErgo", 0, false);
             let chainFrameworkPath = "Ergo/SigmaParticle/";
             let encEnvPath = chainFrameworkPath.to_owned() + &ErgoAccountName.clone().unwrap() + "/.env.encrypted";
-            dbg!(&encEnvPath);
+            //dbg!(&encEnvPath);
             let exists = if let Ok(_) = fs::metadata(encEnvPath.clone()) {
                 true
             } else {
@@ -1476,7 +1545,6 @@ async fn handle_request(request: Request, mut storage: Storage) -> (bool, Option
             let Qprime = big_is_prime(
                 &Q.parse::<BigInt>().expect("error unwrapping specified q value into u64")
             );
-
             return (status, Some(Qprime.to_string()));
             //adding big_is_prime directly to avoid redirection waste
         }
@@ -1552,11 +1620,9 @@ async fn handle_request(request: Request, mut storage: Storage) -> (bool, Option
                 println!("Out: {:?}, Err: {:?}", out, err);
                 if out == Some("True\n".to_string())
                 {
-//                    println!("PasswordKnowledgeProven");
+                    println!("PasswordKnowledgeProven");
                     storage.loggedInAccountMap.write().insert(enc_env_path, request.Password.clone().unwrap());
-                    dbg!(&storage.loggedInAccountMap);
                 }
-                //push success cases to loggedInAccountMap here
             }
             else
             {
@@ -1564,6 +1630,17 @@ async fn handle_request(request: Request, mut storage: Storage) -> (bool, Option
             }
             return (status, Some(out.expect("not string").to_string().replace("\n", "")))
         }
+    }
+    if request.request_type == "get_responderJSONbySwapID"
+    {
+        status = false;
+        if request.SwapTicketID == None
+        {
+            let output = &(output.to_owned() + "SwapTicketID variable is required!");
+            return (status, Some(output.to_string()));
+        }
+        status = true;
+        return (status, Some(get_responderJSONbySwapID(request.SwapTicketID.clone().unwrap()).await));  
     }
     if request.request_type == "reloadAllSwapStates"
     {
@@ -1697,10 +1774,14 @@ async fn handle_request(request: Request, mut storage: Storage) -> (bool, Option
             makeSwapDir(&SwapTicketID.clone(), &ENCinit.clone()).await;
 
             //TODO implement proper false result in makeSwapDir use it to determine response here
-            swapDataMap.insert("SwapState".to_string(), "initiated".to_string());
-            storage.swapStateMap.write().insert(SwapTicketID.clone().to_string(), swapDataMap.clone());
+//            swapDataMap.insert("SwapState".to_string(), "initiated".to_string());
+            
+//            storage.swapStateMap.write().insert(SwapTicketID.clone().to_string(), swapDataMap.clone());
+            let mut swapstatemap = load_local_swap_state_map();
+            swapstatemap.insert(SwapTicketID.clone().to_string(), swapDataMap.clone());
 //            let swapStateMapString = format!("{:#?}", &*storage.swapStateMap.read());
-            let swapStateMapString = serde_json::to_string_pretty(&*storage.swapStateMap.read()).unwrap();            
+//            let swapStateMapString = serde_json::to_string_pretty(&*storage.swapStateMap.read()).unwrap();            
+            let swapStateMapString = serde_json::to_string_pretty(&swapstatemap).unwrap();
             fs::write("SwapStateMap", swapStateMapString).expect("Unable to write file");
             
             let mut localChainAccountPassword = String::new();
@@ -1749,56 +1830,80 @@ async fn handle_request(request: Request, mut storage: Storage) -> (bool, Option
                         dbg!(&errstr);
                         return (false, Some(errstr));
                     }
+                    pyo3::prepare_freethreaded_python();
+                    Python::with_gil(|py| {
+                        let code = std::fs::read_to_string("swap_tools.py").unwrap();
+                        let activators = PyModule::from_code_bound(py, &code, "swap_tools.py", "swap_tools").unwrap();
+                        let args = PyTuple::new_bound(py, &[
+                            SwapTicketID.clone()
+                        ]);
+                        let kwargs = PyDict::new_bound(py);
+                        kwargs.set_item(
+                            "localchainpassword", &localChainAccountPassword
+                        ).unwrap();
+                        kwargs.set_item(
+                            "crosschainpassword", &crossChainAccountPassword
+                        ).unwrap();
+                        match activators.getattr("watchSwapLoop").unwrap().call( &args, Some(&kwargs)) {
+                            Ok(out) => {
+                                // Handle the successful output
+                                //let extract: String
+                                    //= out.extract().expect("error getting traceback to string");
+                                dbg!(out,); //extract);
+                            }
+                            Err(err) => {
+                                // Handle the exception and print the traceback
+                                let traceback_module = PyModule::import_bound(py, "traceback").unwrap();
+                                let traceback_obj = traceback_module.getattr("format_exception").unwrap();
+                                let exc_tb = err.traceback_bound(py);
+                                println!("{}{}", exc_tb.unwrap().format().unwrap(), err);
 
-                    let mut pipe = Popen::create(&[
-                        "python3",  "-u", "main.py", "watchSwapLoop", &SwapTicketID,
-                        &localChainAccountPassword, &crossChainAccountPassword,
-                    ], PopenConfig{
-                        detached: true,
-                        stdout: Redirection::Pipe,
-                        ..Default::default()
-                    }).expect("err");
-                    let (out, err) = pipe.communicate(None).expect("err");
-                    if let Some(exit_status) = pipe.poll()
-                    {
-                        println!("Out: {:?}, Err: {:?}", out, err)
-                    }
-                    else
-                    {
-                        pipe.terminate().expect("err");
-                    }
+                            }
+                        }
+                    });
                     let resp_J_filename = SwapTicketID.clone().to_string() + "/responder.json";
-                    let mut resp_J: Value = serde_json::from_str(&fs::read_to_string(resp_J_filename.clone()).unwrap()).unwrap();
-                    resp_J["MarketURL"] = json!(request.MarketURL.clone().unwrap().replace("\\", "").replace("\"", ""));
-                    resp_J["MarketAPIKey"] = json!(request.MarketAPIKey.clone().unwrap().replace("\\", "").replace("\"", ""));
-                    File::create(resp_J_filename).unwrap().write_all(resp_J.to_string().as_bytes());
-                    return (status, Some(out.expect("out cant be formatted as string").to_string()));
-                }
+                    let marketurl = request.MarketURL.clone().unwrap().replace("\\", "").replace("\"", "").clone();
+                    let marketapikey = request.MarketAPIKey.clone().unwrap().replace("\\", "").replace("\"", "").clone();
+                    tokio::spawn(async move{
+                        input_responder_data(resp_J_filename, marketurl, marketapikey.clone());
+                    });
+                    return (status, Some(response_text));
+                    }
                 else if !ergoencenvexists && !sepoliaencenvexists
                 {
-                    let mut pipe = Popen::create(&[
-                        "python3",  "-u", "main.py", "watchSwapLoop", &SwapTicketID,
-                        &localChainAccountPassword, &crossChainAccountPassword,
-                    ], PopenConfig{
-                        detached: true,
-                        stdout: Redirection::Pipe,
-                        ..Default::default()
-                    }).expect("err");
-                    let (out, err) = pipe.communicate(None).expect("err");
-                    if let Some(exit_status) = pipe.poll()
-                    {
-                        println!("Out: {:?}, Err: {:?}", out, err)
-                    }
-                    else
-                    {
-                        pipe.terminate().expect("err");
-                    }
+                    pyo3::prepare_freethreaded_python();
+                    Python::with_gil(|py| {
+                        let code = std::fs::read_to_string("swap_tools.py").unwrap();
+                        pyo3::prepare_freethreaded_python();
+                        let activators = PyModule::from_code_bound(py, &code, "swap_tools.py", "swap_tools").unwrap();
+                        let args = PyTuple::new_bound(py, &[
+                            SwapTicketID.clone()
+                        ]);
+                        match activators.getattr("watchSwapLoop").unwrap().call1( args) {
+                            Ok(out) => {
+                                // Handle the successful output
+                                //let extract: String
+                                    //= out.extract().expect("error getting traceback to string");
+                                dbg!(out,); //extract);
+                            }
+                            Err(err) => {
+                                // Handle the exception and print the traceback
+                                let traceback_module = PyModule::import_bound(py, "traceback").unwrap();
+                                let traceback_obj = traceback_module.getattr("format_exception").unwrap();
+                                let exc_tb = err.traceback_bound(py);
+                                println!("{}{}", exc_tb.unwrap().format().unwrap(), err);
+                                
+                            }
+                        }
+
+                    });
                     let resp_J_filename = SwapTicketID.clone().to_string() + "/responder.json";
-                    let mut resp_J: Value = serde_json::from_str(&fs::read_to_string(resp_J_filename.clone()).unwrap()).unwrap();
-                    resp_J["MarketURL"] = json!(request.MarketURL.clone().unwrap().replace("\\", "").replace("\"", ""));
-                    resp_J["MarketAPIKey"] = json!(request.MarketAPIKey.clone().unwrap().replace("\\", "").replace("\"", ""));
-                    File::create(resp_J_filename).unwrap().write_all(resp_J.to_string().as_bytes());
-                    return (status, Some(out.expect("out cant be formatted as string").to_string()));
+                    let marketurl = request.MarketURL.clone().unwrap().replace("\\", "").replace("\"", "").clone();
+                    let marketapikey = request.MarketAPIKey.clone().unwrap().replace("\\", "").replace("\"", "").clone();
+                    tokio::spawn(async move{
+                        input_responder_data(resp_J_filename, marketurl, marketapikey.clone());
+                    });
+                    return (status, Some(response_text));
                 }
                 if ergoencenvexists && !sepoliaencenvexists
                 {
@@ -1812,30 +1917,43 @@ async fn handle_request(request: Request, mut storage: Storage) -> (bool, Option
                         dbg!(&errstr);
                         return (false, Some(errstr));
                     }
+                    pyo3::prepare_freethreaded_python();
+                    Python::with_gil(|py| {
+                        let code = std::fs::read_to_string("swap_tools.py").unwrap();
+                        pyo3::prepare_freethreaded_python();
+                        let activators = PyModule::from_code_bound(py, &code, "swap_tools.py", "swap_tools").unwrap();
+                        let args = PyTuple::new_bound(py, &[
+                            SwapTicketID.clone()
+                        ]);
+                        let kwargs = PyDict::new_bound(py);
+                        kwargs.set_item(
+                            "crosschainpassword", &crossChainAccountPassword
+                        ).unwrap();
+                        match activators.getattr("watchSwapLoop").unwrap().call( &args, Some(&kwargs)) {
+                            Ok(out) => {
+                                // Handle the successful output
+                                //let extract: String
+                                    //= out.extract().expect("error getting traceback to string");
+                                dbg!(out,); //extract);
+                            }
+                            Err(err) => {
+                                // Handle the exception and print the traceback
+                                let traceback_module = PyModule::import_bound(py, "traceback").unwrap();
+                                let traceback_obj = traceback_module.getattr("format_exception").unwrap();
+                                let exc_tb = err.traceback_bound(py);
+                                println!("{}{}", exc_tb.unwrap().format().unwrap(), err);
 
-                    let mut pipe = Popen::create(&[
-                        "python3",  "-u", "main.py", "watchSwapLoop_crossEncOnly", &SwapTicketID,
-                        &crossChainAccountPassword,
-                    ], PopenConfig{
-                        detached: true,
-                        stdout: Redirection::Pipe,
-                        ..Default::default()
-                    }).expect("err");
-                    let (out, err) = pipe.communicate(None).expect("err");
-                    if let Some(exit_status) = pipe.poll()
-                    {
-                        println!("Out: {:?}, Err: {:?}", out, err)
-                    }
-                    else
-                    {
-                        pipe.terminate().expect("err");
-                    }
+                            }
+                        }
+
+                    });
                     let resp_J_filename = SwapTicketID.clone().to_string() + "/responder.json";
-                    let mut resp_J: Value = serde_json::from_str(&fs::read_to_string(resp_J_filename.clone()).unwrap()).unwrap();
-                    resp_J["MarketURL"] = json!(request.MarketURL.clone().unwrap().replace("\\", "").replace("\"", ""));
-                    resp_J["MarketAPIKey"] = json!(request.MarketAPIKey.clone().unwrap().replace("\\", "").replace("\"", ""));
-                    File::create(resp_J_filename).unwrap().write_all(resp_J.to_string().as_bytes());
-                    return (status, Some(out.expect("out cant be formatted as string").to_string()));
+                    let marketurl = request.MarketURL.clone().unwrap().replace("\\", "").replace("\"", "").clone();
+                    let marketapikey = request.MarketAPIKey.clone().unwrap().replace("\\", "").replace("\"", "").clone();
+                    tokio::spawn(async move{
+                        input_responder_data(resp_J_filename, marketurl, marketapikey.clone());
+                    });
+                    return (status, Some(response_text));
                 }
                 if !ergoencenvexists && sepoliaencenvexists
                 {
@@ -1849,30 +1967,43 @@ async fn handle_request(request: Request, mut storage: Storage) -> (bool, Option
                         dbg!(&errstr);
                         return (false, Some(errstr));
                     }
+                    pyo3::prepare_freethreaded_python();
+                    Python::with_gil(|py| {
+                        let code = std::fs::read_to_string("swap_tools.py").unwrap();
+                        pyo3::prepare_freethreaded_python();
+                        let activators = PyModule::from_code_bound(py, &code, "swap_tools.py", "swap_tools").unwrap();
+                        let args = PyTuple::new_bound(py, &[
+                            SwapTicketID.clone()
+                        ]);
+                        let kwargs = PyDict::new_bound(py);
+                        kwargs.set_item(
+                            "localchainpassword", &localChainAccountPassword
+                        ).unwrap();
+                        match activators.getattr("watchSwapLoop").unwrap().call( &args, Some(&kwargs)) {
+                            Ok(out) => {
+                                // Handle the successful output
+                                //let extract: String
+                                    //= out.extract().expect("error getting traceback to string");
+                                dbg!(out,); //extract);
+                            }
+                            Err(err) => {
+                                // Handle the exception and print the traceback
+                                let traceback_module = PyModule::import_bound(py, "traceback").unwrap();
+                                let traceback_obj = traceback_module.getattr("format_exception").unwrap();
+                                let exc_tb = err.traceback_bound(py);
+                                println!("{}{}", exc_tb.unwrap().format().unwrap(), err);
 
-                    let mut pipe = Popen::create(&[
-                        "python3",  "-u", "main.py", "watchSwapLoop_localEncOnly", &SwapTicketID,
-                        &localChainAccountPassword, &crossChainAccountPassword,
-                    ], PopenConfig{
-                        detached: true,
-                        stdout: Redirection::Pipe,
-                        ..Default::default()
-                    }).expect("err");
-                    let (out, err) = pipe.communicate(None).expect("err");
-                    if let Some(exit_status) = pipe.poll()
-                    {
-                        println!("Out: {:?}, Err: {:?}", out, err)
-                    }
-                    else
-                    {
-                        pipe.terminate().expect("err");
-                    }
+                            }
+                        }
+
+                    });
                     let resp_J_filename = SwapTicketID.clone().to_string() + "/responder.json";
-                    let mut resp_J: Value = serde_json::from_str(&fs::read_to_string(resp_J_filename.clone()).unwrap()).unwrap();
-                    resp_J["MarketURL"] = json!(request.MarketURL.clone().unwrap().replace("\\", "").replace("\"", ""));
-                    resp_J["MarketAPIKey"] = json!(request.MarketAPIKey.clone().unwrap().replace("\\", "").replace("\"", ""));
-                    File::create(resp_J_filename).unwrap().write_all(resp_J.to_string().as_bytes());
-                    return (status, Some(out.expect("out cant be formatted as string").to_string()));
+                    let marketurl = request.MarketURL.clone().unwrap().replace("\\", "").replace("\"", "").clone();
+                    let marketapikey = request.MarketAPIKey.clone().unwrap().replace("\\", "").replace("\"", "").clone();
+                    tokio::spawn(async move{
+                        input_responder_data(resp_J_filename,  marketurl, marketapikey.clone())
+                    });
+                    return (status, Some(response_text));
                 }
             }
             return  (status, Some("Unknown Error".to_string()));

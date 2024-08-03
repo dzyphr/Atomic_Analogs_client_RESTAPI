@@ -1,4 +1,14 @@
-use crate::{readJSONfromfilepath, json, Path, File, Storage, Html, Read};
+use crate::{readJSONfromfilepath, json, Path, File, Storage, Html, Read, readJSONfromSingleNestMap, load_local_swap_state_map, fs};
+
+pub async fn get_responderJSONbySwapID(SwapID: String) -> String
+{
+    return fs::read_to_string((&(SwapID + "/responder.json"))).unwrap()
+}
+
+pub async fn get_SwapStateMapJSON() -> Result<impl warp::Reply, warp::Rejection>
+{
+   return readJSONfromSingleNestMap(load_local_swap_state_map()).await
+}
 
 pub async fn get_ElGamalPubs() -> Result<impl warp::Reply, warp::Rejection>
 {
@@ -17,6 +27,8 @@ pub async fn get_QGPubkeyArray() -> Result<impl warp::Reply, warp::Rejection>
     let filepath = "QGPubkeyArray.json";
     readJSONfromfilepath(filepath).await
 }
+
+
 
 pub async fn private_get_request_map(
     storage: Storage,
